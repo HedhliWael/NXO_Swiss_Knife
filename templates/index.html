@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Swiss Knife{% endblock %}
+
+{% block content %}
+<div
+    x-data="dashboard()"
+    x-init="init()"
+    class="space-y-10"
+>
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-semibold text-slate-900">Dashboard</h1>
+
+        <div class="flex gap-3">
+            <button
+                @click="showProjectWizard = true"
+                class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium shadow"
+            >
+                New Project
+            </button>
+            <button
+                @click="showFirewallWizard = true"
+                class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium shadow"
+            >
+                New Firewall
+            </button>
+        </div>
+    </div>
+
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="mb-4 px-4 py-3 rounded-lg {% if category == 'error' %}bg-red-50 text-red-700{% else %}bg-green-50 text-green-700{% endif %}">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div x-show="loading" class="text-sm text-slate-500">Loading dashboard...</div>
+
+    <div
+        x-show="error"
+        class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+        x-text="error"
+    ></div>
+
+    <!-- ================================================================== -->
+    <!-- Projects                                                           -->
+    <!-- ================================================================== -->
+    <section class="space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold text-slate-900">
+                Projects
+                <span class="ml-2 rounded-full bg-slate-200 px-2.5 py-0.5 text-xs font-medium text-slate-600"
+                      x-text="projects.length"></span>
+            </h2>
+            <a href="{{ url_for('views.projects_page') }}" class="text-sm font-medium text-indigo-600 hover:underline">
+                Full list
+            </a>
+        </div>
+
+        <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+            <template x-for="project in projects" :key="project.id">
+                <div class="bg-white rounded-xl border border-slate-200 shadow p-5 flex flex-col">
+                    <h3 class="text-lg font-semibold text-slate-900" x-text="project.name"></h3>
+
+                    <p class="mt-1 text-sm text-slate-500" x-text="project.description || 'No description'"></p>
+
+                    <div class="mt-4 space-y-3 flex-1">
+                        <template x-for="fw in project.firewalls" :key="fw.id">
+                            <div class="rounded-lg border border-slate-200 bg-slate-50 p-3 flex items-center justify-between gap-3">
+                                <div>
+                                    <p class="font-medium text-slate-900" x-text="fw.name"></p>
+                                    <p class="text-xs text-slate-500 mt-1"
+                                       x-text="`${fw.vendor} • ${fw.management_ip || 'no management IP'}`">
+                                    </p>
+                                </div>
+
+                                <a
+                                    :href="`/objects?firewall_id=${fw.id}&project_id=${project.id}`"
+                                    class="text-sm font-medium text-indigo-600 hover:underline"
+                                >
+                                    View Objects
+                                </a>
+                            </div>
+                        </template>
+
+                        <p x-show="(project.firewalls || []).length === 0" class="text-sm text-slate-400">
+                            No firewalls attached.
+                        </p>
+                    </div>
+
+                    <div class="mt-4 pt-4 border-t border-slate-100 flex items-center gap-3 text-sm">
+                        <a
+                            :href="`/projects/${project.id}`"
+                            class="font-medium text-indigo-600 hover:underline"
+                        >
+                            Open
+                        </a>
+                        <button
+                            @click="confirmDeleteProject(project)"
+                            class="font-medium text-red-600 hover:underline"
+                        >
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <div
+            x-show="!loading && projects.length === 0"
+            class="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500"
+        >
+            No projects found. Create a project to get started.
+        </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- Firewalls                                                          -->
+    <!-- ================================================================== -->
+    <section class="space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold text-slate-900">
+                Firewalls
+                <span class="ml-2 rounded-full bg-slate-200 px-2.5 py-0.5 text-xs font-medium text-slate-600"
+                      x-text="firewalls.length"></span>
+            </h2>
+            <a href="{{ url_for('views.firewalls_page') }}" class="text-sm font-medium text-indigo-600 hover:underline">
+                Full list
+            </a>
+        </div>
+
+        <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+            <template x-for="fw in firewalls" :key="fw.id">
+                <div class="bg-white rounded-xl border border-slate-200 shadow p-5 flex flex-col">
+                    <div class="flex items-start justify-between gap-3">
+                        <h3 class="text-lg font-semibold text-slate-900" x-text="fw.name"></h3>
+                        <span
+                            class="shrink-0 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-700"
+                            x-text="fw.vendor"></span>
+                    </div>
+
+                    <p class="mt-1 text-sm text-slate-500" x-text="fw.description || 'No description'"></p>
+
+                    <div class="mt-4 space-y-3 flex-1">
+                        <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                            <p class="text-xs uppercase tracking-wide text-slate-400">Project</p>
+                            <p class="mt-1 text-sm">
+                                <a
+                                    x-show="fw.project"
+                                    :href="fw.project ? `/projects/${fw.project.id}` : '#'"
+                                    class="font-medium text-indigo-600 hover:underline"
+                                    x-text="fw.project ? fw.project.name : ''"
+                                ></a>
+                                <span x-show="!fw.project" class="text-slate-400">
+                                    Not attached to a project
+                                </span>
+                            </p>
+                        </div>
+
+                        <div class="flex items-center justify-between gap-3 text-sm text-slate-500">
+                            <span x-text="`Management IP: ${fw.management_ip || 'N/A'}${fw.model ? ' • ' + fw.model : ''}`"></span>
+                            <span class="font-medium text-slate-700" x-text="`${fw.objects_count || 0} objects`"></span>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 pt-4 border-t border-slate-100 flex items-center gap-3 text-sm">
+                        <span x-show="(fw.objects_count || 0) === 0" class="text-slate-400">
+                            No configuration imported
+                        </span>
+                        <a
+                            :href="`/import?firewall_id=${fw.id}`"
+                            class="font-medium text-indigo-600 hover:underline"
+                        >
+                            Import
+                        </a>
+                        <button
+                            @click="openEdit(fw)"
+                            class="font-medium text-slate-600 hover:underline"
+                        >
+                            Edit
+                        </button>
+                        <button
+                            @click="confirmDeleteFirewall(fw)"
+                            class="ml-auto font-medium text-red-600 hover:underline"
+                        >
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <div
+            x-show="!loading && firewalls.length === 0"
+            class="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500"
+        >
+            No firewalls found. Create a firewall to get started.
+        </div>
+    </section>
+
+    <!-- New Project wizard (3 steps) -->
+    <div
+        x-show="showProjectWizard"
+        class="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-6"
+    >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto">
+            {% include "_project_wizard.html" %}
+        </div>
+    </div>
+
+    <!-- New Firewall wizard (3 steps) -->
+    <div
+        x-show="showFirewallWizard"
+        class="fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-6"
+    >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto">
+            {% include "_firewall_wizard.html" %}
+        </div>
+    </div>
+
+    <!-- Edit Firewall modal (mounts while `editing` is set) -->
+    {% include "_firewall_edit.html" %}
+</div>
+{% endblock %}

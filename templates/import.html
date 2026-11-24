@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}Import - Swiss Knife{% endblock %}
+
+{% block content %}
+<div x-data="importWizard()" class="space-y-6">
+    <h1 class="text-2xl font-semibold text-slate-900">Import Wizard</h1>
+
+    <!-- Step indicator -->
+    <div class="flex gap-3">
+        <span
+            :class="step === 1 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
+            class="px-4 py-2 rounded-full text-sm font-medium"
+        >
+            1. Firewall
+        </span>
+
+        <span
+            :class="step === 2 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
+            class="px-4 py-2 rounded-full text-sm font-medium"
+        >
+            2. Source & Objects
+        </span>
+
+        <span
+            :class="step === 3 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
+            class="px-4 py-2 rounded-full text-sm font-medium"
+        >
+            3. Review & Import
+        </span>
+    </div>
+
+    <form @submit.prevent="submitImport()" class="bg-white rounded-xl border border-slate-200 shadow p-6 space-y-6">
+        <!-- Step 1 -->
+        <section x-show="step === 1" class="space-y-4">
+            <h2 class="text-lg font-semibold text-slate-900">Select Firewall</h2>
+
+            <label class="block">
+                <span class="text-sm font-medium text-slate-700 mb-1 block">Firewall</span>
+
+                <select
+                    x-model.number="firewall_id"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                    <option value="">Select firewall</option>
+
+                    {% for fw in firewalls %}
+                        <option value="{{ fw.id }}">
+                            {{ fw.name }} ({{ fw.vendor }})
+                        </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <div class="flex justify-end">
+                <button
+                    type="button"
+                    @click="next()"
+                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
+                >
+                    Next
+                </button>
+            </div>
+        </section>
+
+        <!-- Step 2 -->
+        <section x-show="step === 2" class="space-y-5">
+            <h2 class="text-lg font-semibold text-slate-900">Source and Object Types</h2>
+
+            <fieldset class="border border-slate-200 rounded-lg p-4 space-y-3">
+                <legend class="text-sm font-medium text-slate-700 px-1">Import Source</legend>
+
+                <label class="flex items-center gap-2">
+                    <input type="radio" x-model="source_type" value="file" class="rounded">
+                    File upload
+                </label>
+
+                <label class="flex items-center gap-2">
+                    <input type="radio" x-model="source_type" value="url" class="rounded">
+                    Remote URL / firewall API
+                </label>
+
+                <div x-show="source_type === 'url'" class="pt-1">
+                    <input
+                        type="text"
+                        x-model="url"
+                        placeholder="https://firewall.example.com/api/config"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                </div>
+            </fieldset>
+
+            <fieldset class="border border-slate-200 rounded-lg p-4">
+                <legend class="text-sm font-medium text-slate-700 px-1 mb-3">Objects to Import</legend>
+
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {% for t in object_types %}
+                        <label class="flex items-center gap-2 text-sm text-slate-700">
+                            <input
+                                type="checkbox"
+                                :checked="object_types.includes('{{ t }}')"
+                                @change="toggleType('{{ t }}')"
+                                class="rounded"
+                            >
+                            {{ t }}
+                        </label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+
+            <div class="flex justify-between">
+                <button
+                    type="button"
+                    @click="back()"
+                    class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium"
+                >
+                    Back
+                </button>
+
+                <button
+                    type="button"
+                    @click="next()"
+                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
+                >
+                    Next
+                </button>
+            </div>
+        </section>
+
+        <!-- Step 3 -->
+        <section x-show="step === 3" class="space-y-5">
+            <h2 class="text-lg font-semibold text-slate-900">Review and Import</h2>
+
+            <p class="text-sm text-slate-600">
+                Selected object types:
+                <span class="font-medium text-slate-900" x-text="object_types.join(', ')"></span>
+            </p>
+
+            <div x-show="source_type === 'file'">
+                <label class="block">
+                    <span class="text-sm font-medium text-slate-700 mb-1 block">Configuration File</span>
+
+                    <input
+                        type="file"
+                        x-ref="fileInput"
+                        accept=".txt,.xml,.cfg,.conf"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white file:mr-3 file:rounded-md file:border-0 file:bg-indigo-50 file:text-indigo-700 file:font-medium"
+                    >
+                </label>
+            </div>
+
+            <div x-show="source_type === 'url'">
+                <p class="text-sm text-slate-600">
+                    URL:
+                    <span class="font-mono text-xs break-all" x-text="url"></span>
+                </p>
+            </div>
+
+            <div class="flex justify-between">
+                <button
+                    type="button"
+                    @click="back()"
+                    class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium"
+                >
+                    Back
+                </button>
+
+                <button
+                    type="submit"
+                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg text-sm font-semibold"
+                >
+                    Import Configuration
+                </button>
+            </div>
+        </section>
+
+        <div x-show="error" class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700" x-text="error"></div>
+
+        <div x-show="result" class="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+            <p x-text="result.message"></p>
+
+            <template x-if="result.counts">
+                <pre class="mt-3 text-xs overflow-auto" x-text="JSON.stringify(result.counts, null, 2)"></pre>
+            </template>
+        </div>
+    </form>
+</div>
+{% endblock %}

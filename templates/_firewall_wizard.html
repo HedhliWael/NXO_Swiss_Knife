@@ -1,0 +1,256 @@
+<!-- 3-step firewall creation wizard (firewallWizard in app.js) -->
+<div x-data='firewallWizard({{ object_types | tojson }})' class="space-y-5">
+    <div class="flex items-start justify-between gap-4">
+        <h2 class="text-xl font-semibold text-slate-900">New Firewall</h2>
+        <button @click="showFirewallWizard = false" class="text-slate-400 hover:text-slate-600">✕</button>
+    </div>
+
+    <!-- Step indicator -->
+    <div class="flex gap-2">
+        <span :class="step === 1 ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600'"
+              class="px-3 py-1.5 rounded-full text-xs font-medium">1. Basic data</span>
+        <span :class="step === 2 ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600'"
+              class="px-3 py-1.5 rounded-full text-xs font-medium">2. Import configuration</span>
+        <span :class="step === 3 ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600'"
+              class="px-3 py-1.5 rounded-full text-xs font-medium">3. Create</span>
+    </div>
+
+    <!-- Step 1: basic data -->
+    <section x-show="step === 1" class="space-y-4">
+        <div class="grid grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Name *</label>
+                <input type="text" x-model="name"
+                       class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Vendor *</label>
+                <select x-model="vendor"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <option value="" disabled selected>Select vendor</option>
+                    {% for vendor in vendor_choices %}
+                    <option value="{{ vendor }}">{{ vendor }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Model</label>
+                <input type="text" x-model="model" placeholder="e.g. FortiGate 600E, PA-3220"
+                       class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Management IP</label>
+                <input type="text" x-model="management_ip" placeholder="192.168.1.1"
+                       class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            </div>
+        </div>
+
+        <div class="rounded-lg border border-slate-200 p-4 space-y-3">
+            <p class="text-sm font-medium text-slate-700">Authentication</p>
+
+            <label class="flex items-center gap-2 text-sm text-slate-700">
+                <input type="radio" x-model="auth_mode" value="password" class="rounded">
+                Login / password
+            </label>
+
+            <label class="flex items-center gap-2 text-sm text-slate-700">
+                <input type="radio" x-model="auth_mode" value="token" class="rounded">
+                API token
+            </label>
+
+            <div x-show="auth_mode === 'password'" class="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Login</label>
+                    <input type="text" x-model="api_username"
+                           class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Password</label>
+                    <input type="password" x-model="api_password"
+                           class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+            </div>
+
+            <div x-show="auth_mode === 'token'" class="pt-1">
+                <label class="block text-xs font-medium text-slate-600 mb-1">API token</label>
+                <input type="password" x-model="api_token"
+                       class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            </div>
+        </div>
+
+        <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">Description</label>
+            <textarea x-model="description" rows="2"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+        </div>
+
+        <div class="flex justify-end">
+            <button type="button" @click="next()"
+                    class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+                Next
+            </button>
+        </div>
+    </section>
+
+    <!-- Step 2: import configuration -->
+    <section x-show="step === 2" class="space-y-4">
+        <h3 class="text-lg font-semibold text-slate-900">Import configuration</h3>
+
+        <fieldset class="rounded-lg border border-slate-200 p-4 space-y-3">
+            <legend class="text-sm font-medium text-slate-700 px-1">Source</legend>
+
+            <label class="flex items-center gap-2 text-sm text-slate-700">
+                <input type="radio" x-model="source" value="file" class="rounded">
+                File upload
+            </label>
+
+            <label class="flex items-center gap-2 text-sm text-slate-700">
+                <input type="radio" x-model="source" value="api" class="rounded">
+                REST API request
+            </label>
+
+            <div x-show="source === 'file'" class="pt-1">
+                <input type="file" x-ref="fileInput" accept=".conf,.xml,.txt,.cfg,.json"
+                       class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white file:mr-3 file:rounded-md file:border-0 file:bg-emerald-50 file:text-emerald-700 file:font-medium">
+            </div>
+
+            <div x-show="source === 'api'" class="pt-1 space-y-3">
+                <input type="text" x-model="url"
+                       placeholder="https://firewall.example.com/api/config"
+                       class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+
+                <div class="flex items-center gap-3">
+                    <button type="button" @click="checkConnectivity()" :disabled="connBusy"
+                            class="bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50">
+                        <span x-show="!connBusy">Check connectivity</span>
+                        <span x-show="connBusy">Checking...</span>
+                    </button>
+
+                    <div x-show="connResult" class="text-sm">
+                        <span x-show="connResult && connResult.ok"
+                              class="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700"
+                              x-text="connResult && connResult.detail"></span>
+                        <span x-show="connResult && !connResult.ok"
+                              class="rounded-full border border-red-200 bg-red-50 px-3 py-1 text-red-700"
+                              x-text="connResult && connResult.detail"></span>
+                    </div>
+                </div>
+            </div>
+        </fieldset>
+
+        <p class="text-xs text-slate-400">
+            The import is executed on the next step, right after the firewall is created.
+            You can still skip it there.
+        </p>
+
+        <div class="flex justify-between">
+            <button type="button" @click="back()"
+                    class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium">
+                Back
+            </button>
+            <button type="button" @click="next()"
+                    class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+                Next
+            </button>
+        </div>
+    </section>
+
+    <!-- Step 3: create (+ option to skip import) -->
+    <section x-show="step === 3" class="space-y-4">
+        <h3 class="text-lg font-semibold text-slate-900">Create firewall</h3>
+
+        <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm grid grid-cols-2 gap-x-6 gap-y-1">
+            <p><span class="text-slate-500">Name:</span> <span class="font-medium" x-text="name.trim()"></span></p>
+            <p><span class="text-slate-500">Vendor:</span> <span x-text="vendor"></span></p>
+            <p x-show="model.trim()"><span class="text-slate-500">Model:</span> <span x-text="model.trim()"></span></p>
+            <p x-show="management_ip.trim()"><span class="text-slate-500">Mgmt IP:</span> <span x-text="management_ip.trim()"></span></p>
+            <p><span class="text-slate-500">Auth:</span> <span x-text="auth_mode === 'token' ? 'API token' : 'Login / password'"></span></p>
+            <p x-show="source === 'api' && importMode === 'import'">
+                <span class="text-slate-500">Import from:</span>
+                <span class="font-mono text-xs break-all" x-text="url"></span>
+            </p>
+        </div>
+
+        <fieldset class="rounded-lg border border-slate-200 p-4 space-y-2">
+            <legend class="text-sm font-medium text-slate-700 px-1">Configuration import</legend>
+            <label class="flex items-center gap-2 text-sm text-slate-700">
+                <input type="radio" x-model="importMode" value="import" class="rounded">
+                Import configuration now
+                <span x-show="source === 'file'" class="text-xs text-slate-400">(uploaded file)</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm text-slate-700">
+                <input type="radio" x-model="importMode" value="skip" class="rounded">
+                Skip import for now
+            </label>
+        </fieldset>
+
+        <!-- Progress / result area -->
+        <div x-show="created" class="space-y-4">
+            <div x-show="progressActive" class="space-y-2">
+                <div class="h-2.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                    <div class="h-full bg-emerald-500 transition-all duration-300" :style="`width: ${progress}%`"></div>
+                </div>
+                <p class="text-sm text-slate-600">
+                    <span x-text="progressStage"></span>
+                    <span class="text-slate-400" x-text="` (${progress}%)`"></span>
+                </p>
+            </div>
+
+            <div x-show="importResult" class="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                <p x-text="importResult && importResult.message"></p>
+                <template x-if="importResult && importResult.counts">
+                    <pre class="mt-2 text-xs overflow-auto" x-text="JSON.stringify(importResult.counts, null, 2)"></pre>
+                </template>
+                <template x-if="importResult && importResult.warnings && importResult.warnings.length">
+                    <ul class="mt-2 list-disc pl-5 text-xs text-amber-700">
+                        <template x-for="warning in importResult.warnings" :key="warning">
+                            <li x-text="warning"></li>
+                        </template>
+                    </ul>
+                </template>
+            </div>
+
+            <div x-show="importError" class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+                 x-text="importError"></div>
+
+            <div x-show="!progressActive" class="flex flex-wrap gap-3 justify-end">
+                <a x-show="importResult" :href="objectsUrl()"
+                   class="px-4 py-2 rounded-lg text-sm font-medium border border-indigo-600 text-indigo-600 bg-white hover:bg-indigo-50">
+                    View imported objects
+                </a>
+                <!-- Hidden while an import retry is pending (e.g. no file was
+                     chosen): only Back + "Import configuration" apply. -->
+                <button type="button" x-show="!importError" @click="done()"
+                        class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+                    Done — go to dashboard
+                </button>
+            </div>
+        </div>
+
+        <!-- Shown before creation, and again after a failed import (e.g.
+             "No configuration file chosen") so the user can go back to step
+             2, pick a file, and retry the import without re-creating. -->
+        <div class="flex justify-between" x-show="!created || importError">
+            <button type="button" @click="back()"
+                    class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium">
+                Back
+            </button>
+            <button type="button" @click="create()" :disabled="creating"
+                    class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-lg text-sm font-semibold disabled:opacity-50">
+                <!-- Single x-text label: per-state x-show spans can be left stale by
+                     Alpine's delayed show/hide scheduling (rAF + microtask chains),
+                     which hid "Import configuration" after a failed no-file import. -->
+                <span x-text="creating ? 'Working...' : (created ? 'Import configuration' : 'Create firewall')"></span>
+            </button>
+        </div>
+
+        <div x-show="stepError" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+             x-text="stepError"></div>
+    </section>
+
+    <div x-show="stepError && step === 1" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+         x-text="stepError"></div>
+</div>

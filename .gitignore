@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# QA — disposable test artifacts (see PROJECT.md §9)
+QA/

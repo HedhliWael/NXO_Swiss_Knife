@@ -1,0 +1,403 @@
+{% extends "base.html" %}
+
+{% block title %}Export {{ project.name }} - Swiss Knife{% endblock %}
+
+{% block nav %}
+{% include "_project_nav.html" %}
+{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6">
+    <a href="{{ url_for('views.project_detail', project_id=project.id) }}" class="text-sm text-slate-500 hover:text-slate-700">← Back to project</a>
+
+    <h1 class="text-2xl font-semibold text-slate-900">Export — {{ project.name }}</h1>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="px-4 py-3 rounded-lg {% if category == 'error' %}bg-red-50 text-red-700{% else %}bg-green-50 text-green-700{% endif %}">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    {% if not stats.firewalls %}
+        <div class="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
+            No firewalls are attached to this project. Attach a firewall with an imported
+            configuration first.
+        </div>
+    {% else %}
+        <!-- Statistics: objects per firewall, per type -->
+        <div class="bg-white rounded-xl border border-slate-200 shadow overflow-hidden">
+            <div class="px-6 pt-5 pb-3">
+                <h2 class="text-lg font-semibold text-slate-900">Objects per firewall, per type</h2>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full text-sm">
+                    <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                            <th class="px-6 py-3">Firewall</th>
+                            {% for t in stats.types %}
+                                <th class="px-4 py-3 text-center">{{ t }}</th>
+                            {% endfor %}
+                            <th class="px-6 py-3 text-center">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        {% for fw in stats.firewalls %}
+                        <tr>
+                            <td class="px-6 py-3 font-medium text-slate-900 whitespace-nowrap">{{ fw.name }}</td>
+                            {% for t in stats.types %}
+                                <td class="px-4 py-3 text-center text-slate-700">{{ fw.types[t] if fw.types[t] else '—' }}</td>
+                            {% endfor %}
+                            <td class="px-6 py-3 text-center font-semibold text-slate-900">{{ fw.total }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Statistics: modified objects per firewall, per type -->
+        <div class="bg-white rounded-xl border border-slate-200 shadow overflow-hidden">
+            <div class="px-6 pt-5 pb-3">
+                <h2 class="text-lg font-semibold text-slate-900">Modified objects per firewall, per type</h2>
+                <p class="mt-1 text-xs text-slate-400">
+                    Objects edited in the object list (change history: action “update”) — these are the
+                    differences an export or push will carry over the imported baseline.
+                </p>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full text-sm">
+                    <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                            <th class="px-6 py-3">Firewall</th>
+                            {% for t in stats.types %}
+                                <th class="px-4 py-3 text-center">{{ t }}</th>
+                            {% endfor %}
+                            <th class="px-6 py-3 text-center">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        {% for fw in stats.firewalls %}
+                        <tr>
+                            <td class="px-6 py-3 font-medium text-slate-900 whitespace-nowrap">{{ fw.name }}</td>
+                            {% for t in stats.types %}
+                                <td class="px-4 py-3 text-center {% if fw.modified[t] %}text-amber-600 font-semibold{% else %}text-slate-300{% endif %}">
+                                    {{ fw.modified[t] if fw.modified[t] else '—' }}
+                                </td>
+                            {% endfor %}
+                            <td class="px-6 py-3 text-center font-semibold {% if fw.modified_total %}text-amber-600{% else %}text-slate-300{% endif %}">
+                                {{ fw.modified_total if fw.modified_total else '—' }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 4-step export wizard -->
+        <div x-data='exportWizard({{ stats_json }}, {{ project.id }})' class="space-y-5">
+            <!-- Step indicator -->
+            <div class="flex gap-2 flex-wrap">
+                <span :class="step === 1 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
+                      class="px-3 py-1.5 rounded-full text-xs font-medium">1. Destination</span>
+                <span :class="step === 2 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
+                      class="px-3 py-1.5 rounded-full text-xs font-medium">2. Object types</span>
+                <span :class="step === 3 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
+                      class="px-3 py-1.5 rounded-full text-xs font-medium">3. Summary</span>
+                <span :class="step === 4 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
+                      class="px-3 py-1.5 rounded-full text-xs font-medium">4. Generate / Push</span>
+            </div>
+
+            <div class="bg-white rounded-xl border border-slate-200 shadow p-6 space-y-6">
+                <!-- Step 1: destination firewall (must be attached to the project) -->
+                <section x-show="step === 1" class="space-y-4">
+                    <h2 class="text-lg font-semibold text-slate-900">Destination firewall</h2>
+                    <p class="text-sm text-slate-500">
+                        Choose the attached firewall that will receive the exported configuration.
+                    </p>
+
+                    <div class="space-y-2">
+                        <template x-for="fw in firewalls" :key="fw.id">
+                            <label class="flex items-center gap-3 rounded-lg border border-slate-200 p-3 cursor-pointer hover:bg-slate-50"
+                                   :class="fwId === fw.id ? 'ring-2 ring-indigo-500 border-transparent' : ''">
+                                <input type="radio" :value="fw.id" x-model.number="fwId" class="rounded">
+                                <span class="block">
+                                    <span class="font-medium text-slate-900"
+                                          x-text="`${fw.name} (${fw.vendor})${fw.model ? ' — ' + fw.model : ''}`"></span>
+                                    <span class="block text-xs text-slate-500 mt-0.5"
+                                          x-text="`${fw.total} objects${fw.management_ip ? ' • ' + fw.management_ip : ''}`"></span>
+                                </span>
+                            </label>
+                        </template>
+                    </div>
+
+                    <div class="flex justify-end">
+                        <button type="button" @click="next()"
+                                class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+                            Next
+                        </button>
+                    </div>
+                </section>
+
+                <!-- Step 2: filter by object type -->
+                <section x-show="step === 2" class="space-y-4">
+                    <h2 class="text-lg font-semibold text-slate-900">Object types to export</h2>
+
+                    <div class="flex gap-3 text-xs mb-2">
+                        <button type="button" @click="selectAllTypes()" class="font-medium text-indigo-600 hover:underline">Select all</button>
+                        <button type="button" @click="selectTaggedOnly()" class="font-medium text-indigo-600 hover:underline">Tagged only</button>
+                        <button type="button" @click="clearAllTypes()" class="font-medium text-slate-500 hover:underline">Clear</button>
+                    </div>
+
+                    <p class="text-xs text-slate-500">
+                        By default the types that have objects tagged “Include in the export” are
+                        preselected and their <strong>tagged objects</strong> are exported. Use
+                        “All objects” per type (or “Select all”) to include every object, even the
+                        not-tagged ones — or “Tagged only” to select every object type filter in
+                        the “Tagged only” scope (tagged objects of every type).
+                    </p>
+
+                    <p class="text-xs text-slate-500">
+                        The export contains the selected object types from <strong>every firewall
+                        in the database</strong> — the destination receives all matching objects,
+                        not only its own imported configuration.
+                    </p>
+
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                        <template x-for="t in (stats.types || [])" :key="t">
+                            <div class="rounded-lg border border-slate-200 p-3 space-y-1 hover:bg-slate-50"
+                                 :class="selectedTypes.includes(t) ? 'ring-2 ring-indigo-500 border-transparent' : ''">
+                                <label class="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                                    <input type="checkbox" :checked="selectedTypes.includes(t)" @change="toggleType(t)" class="rounded">
+                                    <span class="font-medium" x-text="t"></span>
+                                </label>
+                                <span class="block text-xs text-slate-400"
+                                      x-text="`${typeCount(t)} object${typeCount(t) === 1 ? '' : 's'} • ${includedCount(t)} in export${modifiedCount(t) ? ' • ' + modifiedCount(t) + ' modified' : ''}`"></span>
+                                <div class="flex gap-4 pt-1" x-show="selectedTypes.includes(t)">
+                                    <label class="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                                        <input type="radio" class="rounded" :checked="scopeOf(t) === 'tagged'" @change="setScope(t, 'tagged')">
+                                        Tagged only
+                                    </label>
+                                    <label class="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                                        <input type="radio" class="rounded" :checked="scopeOf(t) === 'all'" @change="setScope(t, 'all')">
+                                        All objects
+                                    </label>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <p class="text-xs text-amber-700" x-show="selectedTypes.length > 0 && totalSelected() === 0">
+                        No objects will be exported with the current selection — tag objects on the
+                        object list page (“Include in the export”) or switch a type to “All objects”.
+                    </p>
+
+                    <div class="flex justify-between">
+                        <button type="button" @click="back()"
+                                class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium">
+                            Back
+                        </button>
+                        <button type="button" @click="next()"
+                                class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+                            Next
+                        </button>
+                    </div>
+                </section>
+
+                <!-- Step 3: summary report -->
+                <section x-show="step === 3" class="space-y-4">
+                    <h2 class="text-lg font-semibold text-slate-900">Summary</h2>
+
+                    <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm space-y-2">
+                        <p>
+                            <span class="text-slate-500">Destination:</span>
+                            <span class="font-medium text-slate-900" x-text="fw() ? fw().name : '—'"></span>
+                            <span class="text-slate-500" x-text="fw() ? `(${fw().vendor}${fw().model ? ', ' + fw().model : ''})` : ''"></span>
+                        </p>
+                        <p>
+                            <span class="text-slate-500">Object types:</span>
+                            <span class="font-medium text-slate-900" x-text="selectedTypes.join(', ') || '—'"></span>
+                        </p>
+                        <p>
+                            <span class="text-slate-500">Objects in export:</span>
+                            <span class="font-semibold text-slate-900" x-text="totalSelected()"></span>
+                        </p>
+                        <p class="text-xs text-slate-500"
+                           x-text="selectedTypes.map((t) => `${t}: ${effectiveCount(t)}${scopeOf(t) === 'tagged' ? ' (tagged only)' : ' (all objects)'}`).join('  •  ')"></p>
+                        <p>
+                            <span class="text-slate-500">Method:</span>
+                        </p>
+                    </div>
+
+                    <fieldset class="rounded-lg border border-slate-200 p-4 space-y-2">
+                        <legend class="text-sm font-medium text-slate-700 px-1">How to deliver</legend>
+                        <label class="flex items-center gap-2 text-sm text-slate-700">
+                            <input type="radio" x-model="method" value="file" class="rounded">
+                            Generate configuration file (vendor-specific format, download)
+                        </label>
+                        <label class="flex items-center gap-2 text-sm text-slate-700">
+                            <input type="radio" x-model="method" value="push" class="rounded">
+                            Push to the firewall via API
+                        </label>
+
+                        <div class="pl-6 space-y-1" x-show="method === 'file' && fw() && fw().vendor === 'paloalto'">
+                            <p class="text-xs text-slate-500">Palo Alto file format</p>
+                            <label class="flex items-center gap-2 text-sm text-slate-700">
+                                <input type="radio" x-model="format" value="xml" class="rounded">
+                                XML (PAN-OS config document, .xml)
+                            </label>
+                            <label class="flex items-center gap-2 text-sm text-slate-700">
+                                <input type="radio" x-model="format" value="set" class="rounded">
+                                Set / display format (show config, .txt)
+                            </label>
+                        </div>
+                    </fieldset>
+
+                    <div class="flex justify-between">
+                        <button type="button" @click="back()"
+                                class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium">
+                            Back
+                        </button>
+                        <button type="button" @click="next()"
+                                class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+                            Next
+                        </button>
+                    </div>
+                </section>
+
+                <!-- Step 4: generate file or push via API -->
+                <section x-show="step === 4" class="space-y-5">
+                    <h2 class="text-lg font-semibold text-slate-900">
+                        <span x-show="method === 'file'">Generate configuration file</span>
+                        <span x-show="method === 'push'">Push to firewall via API</span>
+                    </h2>
+
+                    <!-- ===== File export ===== -->
+                    <div x-show="method === 'file'" class="space-y-4">
+                        <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm flex flex-wrap gap-x-8 gap-y-1">
+                            <span><span class="text-slate-500">Destination:</span> <span class="font-medium" x-text="fw() ? fw().name : '—'"></span></span>
+                            <span><span class="text-slate-500">Format:</span> <span x-text="formatLabel()"></span></span>
+                            <span><span class="text-slate-500">Objects:</span> <span class="font-medium" x-text="totalSelected()"></span></span>
+                        </div>
+
+                        <div x-show="fileBusy" class="space-y-2">
+                            <div class="h-2.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                                <div class="h-full bg-indigo-500 transition-all duration-300" :style="`width: ${fileProgress}%`"></div>
+                            </div>
+                            <p class="text-sm text-slate-600">
+                                <span x-text="fileStage"></span>
+                                <span class="text-slate-400" x-text="` (${fileProgress}%)`"></span>
+                            </p>
+                        </div>
+
+                        <div x-show="!fileBusy && !fileResult && !fileError">
+                            <button type="button" @click="generateFile()"
+                                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg text-sm font-semibold">
+                                Generate configuration file
+                            </button>
+                        </div>
+
+                        <div x-show="fileResult" class="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 space-y-3">
+                            <p>
+                                Configuration file generated:
+                                <strong x-text="fileResult.object_count"></strong> objects,
+                                <span x-text="fileResult.size_bytes"></span> bytes.
+                            </p>
+                            <a :href="fileResult.download_url"
+                               class="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold">
+                                <i class="fas fa-download"></i>
+                                <span x-text="fileResult.filename"></span>
+                            </a>
+                        </div>
+
+                        <div x-show="fileError" class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+                             x-text="fileError"></div>
+                    </div>
+
+                    <!-- ===== API push ===== -->
+                    <div x-show="method === 'push'" class="space-y-4">
+                        <!-- Connection status -->
+                        <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm space-y-2">
+                            <div class="flex items-center justify-between">
+                                <span><span class="text-slate-500">Destination:</span> <span class="font-medium" x-text="fw() ? fw().name : '—'"></span></span>
+                                <button type="button" @click="checkConn()" :disabled="connBusy"
+                                        class="text-xs font-medium text-indigo-600 hover:underline disabled:opacity-50">
+                                    <span x-show="!connBusy">Re-check connection</span>
+                                    <span x-show="connBusy">Checking...</span>
+                                </button>
+                            </div>
+
+                            <div x-show="connBusy" class="text-slate-400">Checking connection status...</div>
+
+                            <template x-if="connResult">
+                                <span
+                                    :class="connResult.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'"
+                                    class="inline-block rounded-full border px-3 py-1 text-xs font-medium"
+                                    x-text="connResult.detail + (connResult.latency_ms != null ? ` (${connResult.latency_ms} ms)` : '')">
+                                </span>
+                            </template>
+
+                            <div x-show="!connResult && !connBusy" class="text-slate-400">
+                                Click “Re-check connection” to probe the destination.
+                            </div>
+                        </div>
+
+                        <div x-show="!pushBusy && !pushResult && !pushError">
+                            <button type="button" @click="push()"
+                                    class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-lg text-sm font-semibold">
+                                Push
+                            </button>
+                        </div>
+
+                        <!-- Push progress / message screen -->
+                        <div x-show="pushBusy || pushResult || pushError" class="space-y-3">
+                            <div class="h-2.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                                <div
+                                    :class="pushError ? 'bg-red-500' : 'bg-emerald-500'"
+                                    class="h-full transition-all duration-300"
+                                    :style="`width: ${pushProgress}%`"></div>
+                            </div>
+                            <p class="text-sm text-slate-600" x-show="pushBusy" x-text="pushStage"></p>
+
+                            <div x-show="pushResult" class="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800"
+                                 x-text="pushResult.message"></div>
+
+                            <div x-show="pushError" class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+                                 x-text="pushError"></div>
+                        </div>
+                    </div>
+
+                    <!-- Success: validate & return to project -->
+                    <div x-show="succeeded" class="rounded-lg border border-emerald-200 bg-emerald-50 p-5 flex flex-wrap items-center justify-between gap-3">
+                        <p class="text-sm text-emerald-800 font-medium">
+                            <span x-show="fileResult">File generated and ready — download it to complete the export.</span>
+                            <span x-show="pushResult">Push completed successfully.</span>
+                        </p>
+                        <a
+                            :href="backUrl"
+                            class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-lg text-sm font-semibold"
+                        >
+                            Validate &amp; return to project
+                        </a>
+                    </div>
+
+                    <div class="flex justify-between" x-show="!succeeded">
+                        <button type="button" @click="back()"
+                                class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium">
+                            Back
+                        </button>
+                        <span></span>
+                    </div>
+                </section>
+
+                <div x-show="stepError" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+                     x-text="stepError"></div>
+            </div>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

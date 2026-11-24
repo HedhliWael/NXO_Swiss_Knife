@@ -1,0 +1,535 @@
+{% extends "base.html" %}
+
+{% block title %}Objects - Swiss Knife{% endblock %}
+
+{% block content %}
+<div x-data='objectTable({{ columns_json }})' class="space-y-6">
+    <!-- Header / back link -->
+    <div class="flex items-start justify-between gap-4">
+        <div>
+            {% if project %}
+                <a href="{{ url_for('views.project_detail', project_id=project.id) }}" class="text-sm text-slate-500 hover:text-slate-700">← Back to project: {{ project.name }}</a>
+            {% else %}
+                <a href="{{ url_for('views.dashboard') }}" class="text-sm text-slate-500 hover:text-slate-700">← Dashboard</a>
+            {% endif %}
+
+            <h1 class="mt-1 text-2xl font-semibold text-slate-900">
+                {% if object_type %}
+                    {{ object_type | replace('_', ' ') }}
+                    {% if firewall %}— {{ firewall.name }}{% endif %}
+                {% else %}
+                    Configuration Objects
+                {% endif %}
+            </h1>
+        </div>
+    </div>
+
+    <!-- Scope context bar (no project/firewall filters: the scope is fixed by the navigation context) -->
+    <div class="flex flex-wrap items-center gap-2 text-sm">
+        <span class="rounded-full border border-slate-200 bg-white px-3 py-1 text-slate-600">
+            {% if project %}Project: <strong>{{ project.name }}</strong>{% else %}All projects{% endif %}
+        </span>
+        <span class="rounded-full border border-slate-200 bg-white px-3 py-1 text-slate-600">
+            {% if firewall %}Firewall: <strong>{{ firewall.name }}</strong> ({{ firewall.vendor }}){% else %}All firewalls{% endif %}
+        </span>
+        <span class="rounded-full border border-slate-200 bg-white px-3 py-1 text-slate-600">
+            Type: <strong>{{ object_type or 'all' }}</strong>
+        </span>
+        <a href="{{ url_for('views.objects_page') }}" class="text-xs font-medium text-indigo-600 hover:underline">
+            Show all objects
+        </a>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="bg-white rounded-xl border border-slate-200 shadow p-5 flex flex-wrap items-center gap-4">
+        <button
+            type="button"
+            x-show="scope.firewall_id"
+            @click="openAdd()"
+            class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
+        >
+            + Add object
+        </button>
+        <button
+            type="button"
+            x-show="!scope.firewall_id"
+            disabled
+            title="Open this page from a project or firewall to add objects"
+            class="bg-slate-200 text-slate-400 px-4 py-2 rounded-lg text-sm font-medium cursor-not-allowed"
+        >
+            + Add object
+        </button>
+
+        <select
+            x-model="searchField"
+            class="rounded-lg border border-slate-300 px-2 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        >
+            <option value="any">Any field</option>
+            <option value="name">Name</option>
+            <option value="description">Description</option>
+            {% for key in payload_search_keys %}
+                <option value="{{ key }}">{{ key }}</option>
+            {% endfor %}
+        </select>
+
+        <input
+            type="text"
+            x-model.debounce.300ms="searchTerm"
+            @keyup.enter="page = 1; load()"
+            placeholder="Search (name, description, other fields…"
+            class="rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        >
+
+        <div class="ml-auto flex items-center gap-3">
+            <span x-show="pending.length > 0"
+                  class="rounded-full bg-amber-100 border border-amber-200 px-3 py-1 text-xs font-medium text-amber-700"
+                  x-text="`${pending.length} staged change${pending.length > 1 ? 's' : ''} (not saved yet)`"></span>
+
+            <button
+                type="button"
+                @click="includeInExport()"
+                :disabled="toIncludeCount === 0 || tagging"
+                title="Include the selected objects in the config export"
+                class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+            >
+                <span x-show="!tagging">Include in the export<span x-text="toIncludeCount ? ` (${toIncludeCount})` : ''"></span></span>
+                <span x-show="tagging">Tagging...</span>
+            </button>
+
+            <button
+                type="button"
+                @click="removeFromExport()"
+                :disabled="toRemoveCount === 0 || tagging"
+                title="Remove the selected objects from the config export"
+                class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+            >
+                <span x-show="!tagging">Remove from export<span x-text="toRemoveCount ? ` (${toRemoveCount})` : ''"></span></span>
+                <span x-show="tagging">Untagging...</span>
+            </button>
+
+            <button
+                type="button"
+                @click="validate()"
+                :disabled="pending.length === 0 || committing"
+                class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+            >
+                <span x-show="!committing">Validate (commit to database)</span>
+                <span x-show="committing">Committing...</span>
+            </button>
+
+            <button
+                type="button"
+                x-show="pending.length > 0"
+                @click="discard()"
+                class="text-sm font-medium text-slate-500 hover:text-slate-700"
+            >
+                Discard
+            </button>
+        </div>
+    </div>
+
+    <!-- Commit feedback -->
+    <div x-show="commitMsg" class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"
+         x-text="commitMsg"></div>
+    <div x-show="commitError" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+         x-text="commitError"></div>
+    <div x-show="tagMsg" class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"
+         x-text="tagMsg"></div>
+    <div x-show="tagError" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+         x-text="tagError"></div>
+    <div x-show="error" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+         x-text="error"></div>
+
+    <!-- Table -->
+    <div class="bg-white rounded-xl border border-slate-200 shadow overflow-hidden">
+        <div x-show="loading" class="p-10 text-center text-sm text-slate-400">Loading objects...</div>
+
+        <!-- Horizontal scroll: the type-specific columns can be wider than
+             the card — the Actions column must stay fully visible, never
+             cropped by the card's overflow-hidden. -->
+        <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+            <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                    <th class="px-3 py-3 w-10">
+                        <input
+                            type="checkbox"
+                            @change="togglePage()"
+                            :checked="allPageChecked"
+                            :disabled="selectableRows.length === 0"
+                            title="Select the objects shown on this page"
+                            class="rounded"
+                        >
+                    </th>
+                    <th class="px-4 py-3 whitespace-nowrap">In export</th>
+                    {% for col in columns %}
+                        <th class="px-4 py-3 whitespace-nowrap">{{ col[0] }}</th>
+                    {% endfor %}
+                    <th class="px-4 py-3 text-right">Actions</th>
+                </tr>
+            </thead>
+
+            <tbody class="divide-y divide-slate-100">
+                <template x-for="row in displayRows" :key="row.id">
+                    <tr class="hover:bg-slate-50 transition cursor-pointer" @click="openEdit(row)">
+                        <td class="px-3 py-3" @click.stop>
+                            <input
+                                type="checkbox"
+                                :checked="isChecked(row.id)"
+                                @change="toggleCheck(row.id)"
+                                :disabled="!!row._new"
+                                class="rounded"
+                                :title="row._new ? 'Staged new object — commit it (Validate) before tagging' : 'Select — then use “Include in the export” or “Remove from export”'"
+                            >
+                        </td>
+                        <td class="px-4 py-3 whitespace-nowrap" @click.stop>
+                            <span x-show="row.export_included"
+                                class="rounded-full bg-indigo-100 border border-indigo-200 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                                in export
+                            </span>
+                            <span x-show="!row.export_included" class="text-slate-300">—</span>
+                        </td>
+                        {% for col in columns %}
+                        <td class="px-4 py-3 text-slate-700 max-w-md truncate"
+                            :title="cellValue(row, '{{ col[1] }}')"
+                            x-text="cellValue(row, '{{ col[1] }}')"></td>
+                        {% endfor %}
+                        <td class="px-4 py-3 text-right whitespace-nowrap" @click.stop>
+                            <span x-show="row._new" class="mr-2 rounded-full bg-sky-100 border border-sky-200 px-2 py-0.5 text-xs font-medium text-sky-700">
+                                new
+                            </span>
+                            <span x-show="row._staged" class="mr-2 rounded-full bg-amber-100 border border-amber-200 px-2 py-0.5 text-xs font-medium text-amber-700">
+                                staged
+                            </span>
+                            <button
+                                x-show="!row._new"
+                                @click="openEdit(row)"
+                                class="text-sm font-medium text-indigo-600 hover:underline"
+                            >
+                                Modify
+                            </button>
+                            <span x-show="!row._new" class="mx-2 text-slate-300">|</span>
+                            <button
+                                x-show="!row._new"
+                                @click="stageDeleteFromRow(row)"
+                                class="text-sm font-medium text-red-600 hover:underline"
+                            >
+                                Delete
+                            </button>
+                            <button
+                                x-show="row._new"
+                                @click="pending = pending.filter((c) => !(c.op === 'create' && c.name === row.name))"
+                                class="text-sm font-medium text-slate-500 hover:underline"
+                            >
+                                Cancel
+                            </button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+        </div>
+
+        <div x-show="displayRows.length === 0 && !loading" class="p-10 text-center text-slate-500">
+            No objects found.
+        </div>
+    </div>
+
+    <!-- Pagination -->
+    <div class="flex flex-wrap items-center justify-between gap-4 text-sm text-slate-600">
+        <span x-text="`Page ${page} of ${totalPages} — ${total} object${total === 1 ? '' : 's'}`"></span>
+
+        <div class="flex items-center gap-3">
+            <label class="text-xs text-slate-500">Rows per page</label>
+            <select
+                x-model.number="perPage"
+                @change="changePerPage()"
+                class="rounded-lg border border-slate-300 px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+                <option value="10">10</option>
+                <option value="15">15</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="500">500</option>
+            </select>
+
+            <button
+                type="button"
+                @click="gotoPage(page - 1)"
+                :disabled="page <= 1"
+                class="px-3 py-2 rounded-lg border border-slate-300 bg-white disabled:opacity-50"
+            >
+                Previous
+            </button>
+
+            <button
+                type="button"
+                @click="gotoPage(page + 1)"
+                :disabled="page >= totalPages"
+                class="px-3 py-2 rounded-lg border border-slate-300 bg-white disabled:opacity-50"
+            >
+                Next
+            </button>
+        </div>
+    </div>
+
+    <!-- Export (below the displayed information) -->
+    {% if project_id %}
+    <div class="flex justify-end">
+        <a
+            href="{{ url_for('views.export_page', project_id=project.id) }}{% if firewall_id %}?firewall_id={{ firewall_id }}{% endif %}"
+            class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg text-sm font-semibold shadow"
+        >
+            Export
+        </a>
+    </div>
+    {% endif %}
+
+    <!-- Edit modal -->
+    <div
+        x-show="modal.open"
+        class="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-6"
+        @click.self="closeModal()"
+    >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-3xl p-6 space-y-5">
+            <div class="flex items-start justify-between gap-4">
+                <div>
+                    <h2 class="text-xl font-semibold text-slate-900" x-text="modal.object ? modal.object.name : ''"></h2>
+
+                    <p class="mt-1 text-sm text-slate-500">
+                        Type:
+                        <span class="font-medium text-slate-700" x-text="modal.object ? modal.object.object_type : ''"></span>
+                        • Firewall:
+                        <span class="font-medium text-slate-700" x-text="modal.object ? (modal.object.firewall_name || '-') : ''"></span>
+                        • Saved to the database with the <strong>Validate</strong> button.
+                    </p>
+                </div>
+
+                <button @click="closeModal()" class="text-slate-400 hover:text-slate-600">✕</button>
+            </div>
+
+            <!-- Tabs -->
+            <div class="flex gap-2 border-b border-slate-200 pb-3">
+                <button
+                    @click="modal.tab = 'details'"
+                    :class="modal.tab === 'details' ? 'text-indigo-600 font-semibold' : 'text-slate-500'"
+                    class="px-3 py-1 rounded-md text-sm"
+                >
+                    Details
+                </button>
+
+                <button
+                    @click="modal.tab = 'history'"
+                    :class="modal.tab === 'history' ? 'text-indigo-600 font-semibold' : 'text-slate-500'"
+                    class="px-3 py-1 rounded-md text-sm"
+                >
+                    History
+                </button>
+            </div>
+
+            <!-- Details Tab -->
+            <div x-show="modal.tab === 'details'" class="space-y-4">
+                <div class="grid grid-cols-2 gap-4 text-sm">
+                    <div class="col-span-2">
+                        <label class="block text-slate-500 mb-1">Name</label>
+                        <input type="text" x-model="modal.name"
+                               class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-slate-500 mb-1">Description</label>
+                        <input type="text" x-model="modal.description"
+                               class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <div>
+                        <p class="text-slate-500 mb-1">Updated by</p>
+                        <p class="font-medium text-slate-900" x-text="modal.object ? (modal.object.updated_by || '-') : '-'"></p>
+                    </div>
+                </div>
+
+                <!-- Visual payload form: one field per payload key, so the
+                     object can be edited without touching raw JSON. -->
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <span class="text-sm font-medium text-slate-700">Payload fields</span>
+                        <button
+                            type="button"
+                            @click="resyncFields()"
+                            title="Rebuild these fields from the Payload JSON below"
+                            class="text-xs font-medium text-indigo-600 hover:underline"
+                        >
+                            ↻ Re-sync from Payload JSON
+                        </button>
+                    </div>
+                    <p class="text-xs text-slate-400 mb-2">
+                        Edit the object visually — list fields: one item per line (or comma separated);
+                        empty number/JSON fields are saved as null.
+                    </p>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <template x-for="field in modal.fields" :key="field.key">
+                            <div class="text-sm" :class="field.kind === 'json' ? 'col-span-2' : ''">
+                                <label class="block text-slate-500 mb-1" x-text="field.key"></label>
+
+                                <input
+                                    x-show="field.kind === 'text'"
+                                    type="text"
+                                    x-model="field.value"
+                                    class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                >
+
+                                <input
+                                    x-show="field.kind === 'number'"
+                                    type="text"
+                                    x-model="field.value"
+                                    placeholder="(empty = null)"
+                                    class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                >
+
+                                <label
+                                    x-show="field.kind === 'boolean'"
+                                    class="flex items-center gap-2 text-sm text-slate-700 py-2"
+                                >
+                                    <input type="checkbox" x-model="field.value" class="rounded border-slate-300">
+                                    <span x-text="field.value ? 'yes' : 'no'"></span>
+                                </label>
+
+                                <textarea
+                                    x-show="field.kind === 'list'"
+                                    x-model="field.value"
+                                    rows="3"
+                                    class="w-full rounded-lg border border-slate-300 p-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                ></textarea>
+
+                                <textarea
+                                    x-show="field.kind === 'json'"
+                                    x-model="field.value"
+                                    rows="4"
+                                    class="w-full rounded-lg border border-slate-300 p-2 font-mono text-xs bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                ></textarea>
+                            </div>
+                        </template>
+
+                        <p x-show="modal.fields.length === 0" class="col-span-2 text-sm text-slate-400">
+                            No payload fields — edit the Payload JSON below.
+                        </p>
+                    </div>
+                </div>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-slate-700 mb-1 block">Payload JSON</span>
+
+                    <textarea
+                        x-model="modal.payloadText"
+                        rows="12"
+                        class="w-full rounded-lg border border-slate-300 p-3 font-mono text-xs bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    ></textarea>
+                </label>
+
+                <div class="flex justify-end gap-3">
+                    <button
+                        @click="validateFromModal()"
+                        :disabled="committing"
+                        class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                    >
+                        <span x-show="!committing">Validate</span>
+                        <span x-show="committing">Saving...</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- History Tab -->
+            <div x-show="modal.tab === 'history'" class="space-y-4">
+                <template x-for="h in modal.history" :key="h.id">
+                    <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm space-y-3">
+                        <div class="flex items-center justify-between">
+                            <span class="font-semibold text-slate-900" x-text="h.action"></span>
+
+                            <span class="text-xs text-slate-500" x-text="h.created_at ? new Date(h.created_at).toLocaleString() : ''"></span>
+                        </div>
+
+                        <p class="text-slate-600">
+                            Field:
+                            <span class="font-medium text-slate-900" x-text="h.field"></span>
+                        </p>
+
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <p class="text-xs uppercase tracking-wide text-slate-500 mb-1">Old Value</p>
+                                <pre class="rounded bg-white border border-slate-200 p-2 overflow-auto max-h-40 text-xs"
+                                     x-text="JSON.stringify(h.old_value || null, null, 2).slice(0, 800)"></pre>
+                            </div>
+
+                            <div>
+                                <p class="text-xs uppercase tracking-wide text-slate-500 mb-1">New Value</p>
+                                <pre class="rounded bg-white border border-slate-200 p-2 overflow-auto max-h-40 text-xs"
+                                     x-text="JSON.stringify(h.new_value || null, null, 2).slice(0, 800)"></pre>
+                            </div>
+                        </div>
+
+                        <p class="text-xs text-slate-500">
+                            User:
+                            <span class="font-medium" x-text="h.user || 'system'"></span>
+                        </p>
+                    </div>
+                </template>
+
+                <p x-show="modal.history.length === 0" class="text-sm text-slate-500">No history found.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add object modal -->
+    <div
+        x-show="addOpen"
+        class="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-6"
+        @click.self="closeAdd()"
+    >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 space-y-4">
+            <div class="flex items-start justify-between gap-4">
+                <div>
+                    <h2 class="text-xl font-semibold text-slate-900">Add {{ object_type or 'object' }}</h2>
+                    <p class="mt-1 text-sm text-slate-500"
+                       x-text="`Firewall: ${scope.firewall_id} • staged — commit with Validate`"></p>
+                </div>
+                <button @click="closeAdd()" class="text-slate-400 hover:text-slate-600">✕</button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Name *</label>
+                    <input type="text" x-model="addName"
+                           class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Description</label>
+                    <input type="text" x-model="addDescription"
+                           class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+            </div>
+
+            <label class="block">
+                <span class="text-sm font-medium text-slate-700 mb-1 block">Payload JSON</span>
+                <textarea
+                    x-model="addPayloadText"
+                    rows="10"
+                    class="w-full rounded-lg border border-slate-300 p-3 font-mono text-xs bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                ></textarea>
+            </label>
+
+            <div class="flex justify-end gap-3">
+                <button @click="closeAdd()"
+                        class="px-4 py-2 rounded-lg text-sm font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-100">
+                    Cancel
+                </button>
+                <button @click="stageAdd()"
+                        class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+                    Stage New Object
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

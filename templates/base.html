@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}NXO Swiss Knife{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- app.js MUST load before Alpine: the Alpine CDN build auto-starts via
+         queueMicrotask() right after its own script body, which runs before any
+         later deferred script. Alpine would then init before dashboard,
+         projectWizard, firewallWizard, objectTable, exportWizard, importWizard
+         and trashBin exist and the components die. -->
+    <script src="{{ url_for('static', filename='js/app.js') }}?v={{ app_version }}" defer></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3b82f6',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .nav-link {
+            @apply text-slate-700 hover:text-primary font-medium;
+        }
+        .nav-link.active {
+            @apply text-primary font-semibold;
+        }
+    </style>
+</head>
+<body class="bg-slate-100">
+    <nav class="bg-white shadow">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center">
+                        <i class="fas fa-tools text-primary text-2xl"></i>
+                        <span class="ml-2 text-xl font-bold text-slate-900">NXO Swiss Knife</span>
+                    </div>
+                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
+                        {% block nav %}
+                        <a href="{{ url_for('views.dashboard') }}" class="nav-link">Dashboard</a>
+                        <a href="{{ url_for('views.trash_page') }}" class="nav-link">Trash</a>
+                        {% endblock %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="py-6">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <footer class="bg-white border-t mt-8">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <p class="text-center text-sm text-slate-500">© 2023 NXO Swiss Knife. All rights reserved.</p>
+        </div>
+    </footer>
+</body>
+</html>
