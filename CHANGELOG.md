@@ -41,6 +41,14 @@ phase go to `QA/`):**
 - Files touched: `.gitignore`, `PROJECT.md`, `CHANGELOG.md`.
 - Verified: `.gitignore` now contains `QA/` after the Python/.venv sections.
 
+**`.gitignore`: ignore the local SQLite database:**
+- Added `instance/swissknife.db` to `.gitignore` (new "# Local SQLite
+  database" section) — the DB is auto-created + migrated at startup and
+  seeded with demo data, so it is not part of the repository; the §2 tree
+  comment for `.gitignore` updated accordingly.
+- Files touched: `.gitignore`, `PROJECT.md`, `CHANGELOG.md`.
+- Verified: `.gitignore` now lists `instance/swissknife.db`.
+
 ---
 
 ## 2026-11-24

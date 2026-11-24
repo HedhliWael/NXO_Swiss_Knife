@@ -160,7 +160,8 @@ NXO_Swiss_Knife/
 │   │                       #   firewallWizard, firewallEdit, objectTable, exportWizard,
 │   │                       #   importWizard, trashBin
 ├── instance/swissknife.db  # SQLite database (tables auto-created + migrated at startup)
-├── .gitignore              # ignores .venv/, __pycache__, QA/
+├── .gitignore              # ignores .venv/, __pycache__, QA/,
+│   │                       #   instance/swissknife.db
 ├── QA/                   # Files created during the testing phase (test scripts,
 │   │                     #   run logs, generated artifacts, API probes) — see
 │   │                     #   [§9](#9-qa-folder-files-created-during-the-testing-phase)

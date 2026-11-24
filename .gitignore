@@ -7,3 +7,6 @@ __pycache__/
 
 # QA — disposable test artifacts (see PROJECT.md §9)
 QA/
+
+# Local SQLite database (created at startup + demo seed; not part of the repo)
+instance/swissknife.db
