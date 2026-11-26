@@ -239,6 +239,121 @@ def _ensure_config_objects_project_nullable():
         raw.close()
 
 
+def _ensure_project_firewall_soft_delete_columns():
+    """One-off migration for existing SQLite databases.
+
+    ``projects`` and ``firewalls`` gained ``is_deleted`` (default 0) and
+    ``deleted_at`` so deleted projects/firewalls land in the Trash and can
+    be restored. SQLite ALTER TABLE can add a NOT NULL column as long as it
+    carries a default, so no table rebuild is needed.
+    """
+    wanted = {
+        "projects": {
+            "is_deleted": "BOOLEAN NOT NULL DEFAULT 0",
+            "deleted_at": "DATETIME",
+        },
+        "firewalls": {
+            "is_deleted": "BOOLEAN NOT NULL DEFAULT 0",
+            "deleted_at": "DATETIME",
+        },
+    }
+
+    raw = db.engine.raw_connection()
+    try:
+        cursor = raw.cursor()
+        for table, cols in wanted.items():
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = {name for _, name, _, _, _, _ in cursor.fetchall()}
+
+            if not columns:
+                continue
+
+            for col in cols:
+                if col not in columns:
+                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {cols[col]}")
+        raw.commit()
+    except Exception:
+        try:
+            raw.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        raw.close()
+
+
+def _ensure_trash_multi_type():
+    """One-off migration for existing SQLite databases.
+
+    ``trash`` now stores every soft-deleted entity: ``item_type``
+    ("object" | "project" | "firewall"), a nullable ``config_object_id``
+    and the new ``project_id`` / ``firewall_id`` columns. SQLite cannot
+    drop the NOT NULL constraint of the existing ``config_object_id``
+    column, so the table is rebuilt when the new columns are missing.
+    """
+    raw = db.engine.raw_connection()
+    try:
+        cursor = raw.cursor()
+        cursor.execute("PRAGMA table_info(trash)")
+        columns = {name for _, name, _, _, _, _ in cursor.fetchall()}
+    finally:
+        raw.close()
+
+    if not columns or "item_type" in columns:
+        return
+
+    raw = db.engine.raw_connection()
+    try:
+        cursor = raw.cursor()
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        cursor.execute("BEGIN")
+        cursor.execute(
+            """
+            CREATE TABLE trash_new (
+                id INTEGER NOT NULL,
+                item_type VARCHAR(16) NOT NULL,
+                config_object_id INTEGER UNIQUE,
+                project_id INTEGER,
+                firewall_id INTEGER,
+                deleted_by VARCHAR(120),
+                deleted_at DATETIME NOT NULL,
+                reason TEXT,
+                restored_at DATETIME,
+                PRIMARY KEY (id),
+                FOREIGN KEY(config_object_id) REFERENCES config_objects (id) ON DELETE CASCADE,
+                FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE,
+                FOREIGN KEY(firewall_id) REFERENCES firewalls (id) ON DELETE CASCADE
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO trash_new (
+                id, item_type, config_object_id, project_id, firewall_id,
+                deleted_by, deleted_at, reason, restored_at
+            )
+            SELECT
+                id, 'object', config_object_id, NULL, NULL,
+                deleted_by, deleted_at, reason, restored_at
+            FROM trash
+            """
+        )
+        cursor.execute("DROP TABLE trash")
+        cursor.execute("ALTER TABLE trash_new RENAME TO trash")
+        cursor.execute("CREATE INDEX ix_trash_project_id ON trash (project_id)")
+        cursor.execute("CREATE INDEX ix_trash_firewall_id ON trash (firewall_id)")
+        cursor.execute("COMMIT")
+    except Exception:
+        try:
+            cursor.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        cursor.execute("PRAGMA foreign_keys=ON")
+        raw.close()
+
+
 def _ensure_config_objects_export_included():
     """One-off migration for existing SQLite databases.
 
@@ -310,6 +425,8 @@ def create_app():
         _ensure_firewall_auth_columns()
         _ensure_config_objects_project_nullable()
         _ensure_config_objects_export_included()
+        _ensure_project_firewall_soft_delete_columns()
+        _ensure_trash_multi_type()
 
     app.register_blueprint(api_bp)
     app.register_blueprint(views_bp)

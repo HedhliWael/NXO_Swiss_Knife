@@ -65,7 +65,14 @@ Core capabilities:
   `modification_history`.
 - **Staged edits + Validate**: object edits/deletes/creates are staged
   client-side and committed atomically by `POST /api/objects/commit`.
-- **Trash**: soft delete with reason, restore support.
+- **Trash**: soft delete with reason and restore support for **objects,
+  firewalls and projects** (deleting a project/firewall cascades into the
+  trash, restoring brings the descendants back). The trash is **separated
+  by level**: the dashboard trash (navbar "Trash") lists deleted **projects
+  and firewalls** only, and every project has its own trash can (trash-can
+  icon on the project page) listing **that project's deleted objects** only.
+  Deleted objects stay visible on the object list (greyed out) with a
+  **Restore** button in place of Delete.
 - **Export**: generate vendor configuration text (temporary download link) or
   push it with streaming progress (currently a mock push).
 - REST **API** (`/api/...`) plus a browser UI (Alpine.js + Tailwind CDN).
@@ -93,60 +100,104 @@ NXO_Swiss_Knife/
 ├── app/
 │   ├── factory.py          # create_app() — Flask factory, db.create_all() + one-off migrations
 │   │                       #   (firewalls.project_id nullable, firewall auth columns,
-│   │                       #   config_objects.project_id nullable)
+│   │                       #   config_objects.project_id nullable, export_included,
+│   │                       #   projects/firewalls is_deleted+deleted_at, trash table
+│   │                       #   rebuilt multi-type)
 │   ├── extensions.py       # db = SQLAlchemy()
-│   ├── models.py           # Project, Firewall (project_id nullable = can be unassigned;
-│   │                       #   model, auth_mode password|token, api_token; set_project()
-│   │                       #   keeps object project_ids in sync), ConfigObject
-│   │                       #   (project_id nullable), ModificationHistory, Trash
+│   ├── models.py           # Project + Firewall (project_id nullable = can be
+│   │                       #   unassigned; model, auth_mode password|token, api_token;
+│   │                       #   set_project() keeps object project_ids in sync;
+│   │                       #   is_deleted + soft_delete()/restore() = Trash),
+│   │                       #   ConfigObject (project_id nullable, is_deleted),
+│   │                       #   ModificationHistory, Trash (item_type object|project|
+│   │                       #   firewall — one row per deleted entity), ExportRecord
+│   │                       #   (generated/pushed config files kept on disk)
 │   ├── views.py            # Web UI routes (dashboard, project pages w/ per-firewall/per-type
-│   │                       #   stats, attach/remove firewall, import, objects w/ type-specific
-│   │                       #   columns, export w/ stats, trash)
+│   │                       #   stats + previous-exports list, attach/remove firewall, import,
+│   │                       #   objects w/ type-specific columns, export w/ stats, export-file
+│   │                       #   download, trash)
 │   ├── api/routes.py       # REST API (projects + attach, firewalls + detail/update
 │   │                       #   GET/POST/PATCH /api/firewalls/<id>, import + /import/stream
 │   │                       #   NDJSON progress, /connectivity, objects CRUD + /objects/commit
-│   │                       #   batch validate, trash, /export/file + download, /export/push
-│   │                       #   streaming, auth placeholder)
+│   │                       #   batch validate + /objects/<id>/restore, trash (dashboard:
+│   │                       #   projects/firewalls; ?project_id= the project's deleted
+│   │                       #   objects; restore of any entry type), /export/file + download,
+│   │                       #   /export/push streaming — every generated/pushed config is
+│   │                       #   persisted to instance/exports/ + export_records (project
+│   │                       #   page list), auth placeholder)
 │   ├── errors.py           # API exception types
 │   ├── forms/              # ProjectForm (used by the project edit page)
 │   └── vendors/            # base.py, factory.py (parser registry), paloalto.py, fortinet.py
 ├── templates/
-│   ├── base.html           # Layout + navbar (Dashboard / Firewalls / Objects / Trash,
-│   │                       #   block `nav`) + scripts (app.js BEFORE Alpine, loaded with a
+│   ├── base.html           # Layout + navbar (Dashboard / Trash, block `nav`) +
+│   │                       #   section system (`.section` as a sunken surface
+│   │                       #   slab with ruled `.section-head` — wraps on narrow
+│   │                       #   screens: `.section-kicker` / `.section-title` /
+│   │                       #   `.section-sub`; `.page-hero`) + alert system
+│   │                       #   (`.flash` success/error/warning/info: per-variant SVG
+│   │                       #   icon via ::before + 4px left accent bar + soft tint)
+│   │                       #   + scripts (app.js BEFORE Alpine, loaded with a
 │   │                       #   ?v= cache-buster — Jinja global `app_version` = app.js mtime)
-│   ├── index.html          # Dashboard: exhaustive project + firewall lists, hosts both
+│   ├── index.html          # Dashboard as three labeled sections: Statistics (stat cards
+│   │                       #   with label + icon in a shared head row, value below),
+│   │                       #   Projects (card grid), Firewalls (card grid); hero
+│   │                       #   holds the New Project / New Firewall actions; hosts both
 │   │                       #   creation wizards (modals) + the edit-firewall modal
 │   ├── _project_wizard.html  # 3-step project creation wizard (basic data → attach
 │   │                       #   existing firewalls — with or without an imported
 │   │                       #   configuration → validate + open project page)
-│   ├── _firewall_wizard.html # 3-step firewall creation wizard (basic data → import
-│   │                       #   w/ connectivity check + progress → create / skip import;
+│   ├── _firewall_wizard.html # 3-step firewall creation wizard (step dots = system
+│   │                       #   `.step-dot` pills; basic data → import w/ connectivity
+│   │                       #   check + `.progress-bar` progress → create / skip import;
 │   │                       #   on import failure: Back to step 2 + "Import configuration"
 │   │                       #   retry without re-creating the firewall; "Done — go to
 │   │                       #   dashboard" hidden while the retry is pending; the step-3
-│   │                       #   action label is a single x-text span)
+│   │                       #   action label is a single x-text span; errors as
+│   │                       #   `flash flash-error`, import success as `flash flash-success`)
 │   ├── _firewall_edit.html   # Edit-firewall modal (wizard step-1 fields; loads current
 │   │                       #   values incl. credentials, PATCH /api/firewalls/<id>)
-│   ├── project.html        # Project detail: stat cards, objects by type per firewall as a
-│   │                       #   block per firewall (clickable type-chip grid + total link,
-│   │                       #   "Total per type" footer), firewalls table (Import / Edit /
-│   │                       #   View Objects / Remove) with the "Attach existing" form (any
-│   │                       #   firewall, config-less ones marked "no configuration yet")
-│   │                       #   at the bottom of the SAME card, Export button below the card
-│   ├── _project_nav.html   # Conditional navbar partial (Objects / Export)
+│   ├── project.html        # Project detail: hero with the project name, the description
+│   │                       #   below it, the trash-can icon (the project's deleted objects
+│   │                       #   → /trash?project_id=) and the Edit Project button (no back
+│   │                       #   link — the Dashboard link lives in the top bar only); an info
+│   │                       #   alert (`.flash flash-info`) above Statistics (modify /
+│   │                       #   adjust / select / remove objects before exporting
+│   │                       #   selectively); four labeled sections:
+│   │                       #   Statistics (stat cards with label + icon head row, Last Import
+│   │                       #   as monospace `stat-value-sm`), Firewalls (white "All firewalls" type-chip panel
+│   │                       #   + one card per firewall with a clickable type-chip grid +
+│   │                       #   total link), Manage firewalls (renamed from "Attached
+│   │                       #   Firewalls": firewall table Import / View Objects / Remove
+│   │                       #   + the "Attach existing firewall" form at the bottom of the SAME
+│   │                       #   card), Export configuration (LAST section: Export Configuration
+│   │                       #   button in the section head + table of the previous generated /
+│   │                       #   pushed configuration files — File/Pushed badge, destination,
+│   │                       #   objects per type, size, date — each downloadable)
+│   ├── _project_nav.html   # Conditional navbar partial (Dashboard / Objects) on the
+│   │                       #   shared `.nav-link` class
 │   ├── project_edit.html   # Edit project name/description
 │   ├── export.html         # Export page: per-firewall/type + modified stats, 4-step wizard
 │   │                       #   (type step: Select all / Tagged only / Clear shortcuts,
 │   │                       #   per-type Tagged only / All objects scope)
 │   ├── import.html         # Standalone import wizard (firewall → source/types → review)
 │   ├── objects.html        # Scoped object list: type-specific columns, add/modify/delete
-│   │                       #   staging, Validate (commit), pagination 10-500, Export button,
-│   │                       #   "In export" tag column + selection checkboxes (Include /
-│   │                       #   Remove from export buttons apply the selection). Modify modal:
-│   │                       #   visual payload form (one field per payload key: text/number/
-│   │                       #   boolean/list/JSON + "Re-sync from Payload JSON") + Payload JSON
-│   │                       #   textarea; Validate = stage + commit the single change
-│   ├── trash.html          # Trash bin + restore
+│   │                       #   staging, Validate (commit — soft pulsing glow while staged
+│   │                       #   changes wait), pagination 10-500, status filter (Included in
+│   │                       #   the export / Modified / Deleted), "In export" tag column +
+│   │                       #   selection checkboxes (Include / Remove from export buttons
+│   │                       #   apply the selection). Deleted objects stay in the list
+│   │                       #   (greyed-out row + "deleted" badge), their Delete button
+│   │                       #   becomes a Restore button. Modify modal: visual payload form
+│   │                       #   (one field per payload key: text/number/boolean/list/JSON +
+│   │                       #   "Re-sync from Payload JSON") + Payload JSON textarea;
+│   │                       #   Validate = stage + commit the single change; project-scoped
+│   │                       #   view: the project's trash-can icon in the page header
+│   │                       #   (→ /trash?project_id=) and no Trash in the nav bar
+│   │                       #   (Dashboard / Objects, as on the project page)
+│   ├── trash.html          # Trash bin, two separate trashes: the dashboard view
+│   │                       #   lists Projects / Firewalls only; ?project_id= (the project
+│   │                       #   trash can) lists that project's deleted objects only —
+│   │                       #   restore in both
 │   ├── firewalls.html      # Firewall dashboard (card grid + New Firewall wizard modal
 │   │                       #   + edit-firewall modal; per-card Objects / Import / Edit /
 │   │                       #   Delete; deep link ?edit=<id> opens the edit modal)
@@ -160,10 +211,14 @@ NXO_Swiss_Knife/
 │   │                       #   firewallWizard, firewallEdit, objectTable, exportWizard,
 │   │                       #   importWizard, trashBin
 ├── instance/swissknife.db  # SQLite database (tables auto-created + migrated at startup)
+├── instance/exports/       # Generated/pushed configuration files (export records;
+│   │                       #   created on first export, ignored by git)
 ├── .gitignore              # ignores .venv/, __pycache__, QA/,
-│   │                       #   instance/swissknife.db
-├── QA/                   # Files created during the testing phase (test scripts,
-│   │                     #   run logs, generated artifacts, API probes) — see
+│   │                       #   instance/swissknife.db, instance/exports/
+├── QA/                   # STRICT location for every created test file and
+│   │                     #   generated log (test scripts, background-server
+│   │                     #   launcher + run logs, generated artifacts, API
+│   │                     #   probes) — see
 │   │                     #   [§9](#9-qa-folder-files-created-during-the-testing-phase)
 └── requirements.txt        # + requests (connectivity checks, REST retrieval/push)
 ```
@@ -174,7 +229,9 @@ Key design notes:
   (models register their tables in the metadata at import time), then runs the
   one-off SQLite migrations (`firewalls.project_id` nullable, firewall
   `model`/`auth_mode`/`api_token` columns, `config_objects.project_id`
-  nullable) so existing databases evolve in place.
+  nullable, `config_objects.export_included`, `projects`/`firewalls`
+  `is_deleted`+`deleted_at`, `trash` rebuilt multi-type) so existing databases
+  evolve in place.
 - The navbar in `base.html` is a `{% block nav %}` so the project pages can
   override it with the conditional `_project_nav.html`.
 - The wizards are Alpine components talking to the REST API (no CSRF forms):
@@ -227,10 +284,13 @@ the first attempt for two compounding reasons:
    `-WorkingDirectory` — the log files land elsewhere, the crash message is
    lost, and the failure looks silent.
 
-Reliable recipe (verified — succeeds on the first attempt):
+Reliable recipe (verified — succeeds on the first attempt). **Every file
+this recipe generates (launcher + run logs) goes into `QA/`** — the strict
+`QA/`-only rule of [§9](#9-qa-folder-files-created-during-the-testing-phase),
+never at the repository root:
 
-1. Create a launcher `_run_server.bat` in the repository root (the quoting
-   lives inside the file, where cmd applies it directly):
+1. Create a launcher `QA\_run_server.bat` (the quoting lives inside the
+   file, where cmd applies it directly):
 
    ```bat
    @echo off
@@ -241,7 +301,7 @@ Reliable recipe (verified — succeeds on the first attempt):
 2. Launch it with **absolute** redirect paths:
 
    ```powershell
-   Start-Process -FilePath 'C:\Users\hedhl\source\repos\NXO_Swiss_Knife\_run_server.bat' -WorkingDirectory 'C:\Users\hedhl\source\repos\NXO_Swiss_Knife' -RedirectStandardOutput 'C:\Users\hedhl\source\repos\NXO_Swiss_Knife\_server_log.txt' -RedirectStandardError 'C:\Users\hedhl\source\repos\NXO_Swiss_Knife\_server_err.txt' -WindowStyle Hidden -PassThru
+   Start-Process -FilePath 'C:\Users\hedhl\source\repos\NXO_Swiss_Knife\QA\_run_server.bat' -WorkingDirectory 'C:\Users\hedhl\source\repos\NXO_Swiss_Knife' -RedirectStandardOutput 'C:\Users\hedhl\source\repos\NXO_Swiss_Knife\QA\_server_log.txt' -RedirectStandardError 'C:\Users\hedhl\source\repos\NXO_Swiss_Knife\QA\_server_err.txt' -WindowStyle Hidden -PassThru
    ```
 
 3. Wait for the port with a **fast** TCP probe — `Test-NetConnection` takes
@@ -255,15 +315,15 @@ Reliable recipe (verified — succeeds on the first attempt):
    }
    ```
 
-4. When done: stop it by port owner and delete the temporary files —
-   `_run_server.bat` + `_server_log.txt` / `_server_err.txt` are **not** part
-   of the repository, and stray `.txt` / `.py` files at the repo root would
-   be picked up by the next Vector DB re-index:
+4. When done: stop it by port owner and delete the temporary files from
+   `QA/` — they are disposable test-round artifacts (strictly `QA/`, see
+   [§9](#9-qa-folder-files-created-during-the-testing-phase); `QA/` contents
+   may be wiped after the test round):
 
    ```powershell
    $c = Get-NetTCPConnection -LocalPort 5000 -State Listen | Select-Object -First 1
    Stop-Process -Id $c.OwningProcess -Force
-   Remove-Item .\_run_server.bat, .\_server_log.txt, .\_server_err.txt
+   Remove-Item .\QA\_run_server.bat, .\QA\_server_log.txt, .\QA\_server_err.txt
    ```
 
 Environment variables (all optional):
@@ -299,26 +359,27 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned.
 
 | Feature | Where | Notes |
 |---|---|---|
-| Dashboard: exhaustive projects + firewalls | `views.dashboard`, `index.html`, `dashboard()` | Two card sections (projects, firewalls) with counts, both creation wizards, `GET /api/projects` + `GET /api/firewalls` |
+| Dashboard: exhaustive projects + firewalls | `views.dashboard`, `index.html`, `dashboard()` | Three labeled sections with ruled section heads (kicker + title + actions): **Statistics** (icon stat cards), **Projects** (card grid with per-project firewall rows), **Firewalls** (card grid); the hero carries the two main actions (New Project / New Firewall); both creation wizards, `GET /api/projects` + `GET /api/firewalls` |
 | Firewall creation wizard (3 steps) | `_firewall_wizard.html`, `firewallWizard()`, `POST /api/firewalls` | Step 1 basic data (name, vendor, **model**, mgmt IP, **login/password or API token**, description); step 2 import source (file upload or REST API) with **Check connectivity** (`POST /api/connectivity`) ; step 3 create + **skip import** option; import runs after create with XHR upload progress or `/api/import/stream` NDJSON progress; **on import failure (e.g. "No configuration file chosen") a Back button returns to step 2** and the step-3 button becomes **Import configuration** — the created firewall is re-imported, never re-created; **while a retry is pending the "Done — go to dashboard" button is hidden** (`x-show="!importError"`, only Back + Import configuration apply); the step-3 action label is a single deterministic `x-text` span (per-state `x-show` spans could be left stale by Alpine's delayed show/hide scheduling, which blanked the "Import configuration" label after a failed no-file import) |
 | Project creation wizard (3 steps) | `_project_wizard.html`, `projectWizard()`, `POST /api/projects` | Step 1 name/description; step 2 attach existing firewalls (**any firewall — also without an imported configuration**, marked "no configuration yet"; "create a firewall first" suggestion when none exist); step 3 validation summary → opens the new project page immediately; attaching moves the firewall (objects follow via `set_project()`) |
-| Project cards: Open / Delete | `index.html`, `dashboard()` | Delete = `confirm()` + cascade delete; **the list refreshes in place** (the POST follows the 302, final 200 = success, `reloadAll()` re-fetches both lists — no page reload); the same `deleteEntity` pattern applies to firewall deletes on the dashboard and the `/firewalls` page (`firewallDashboard()`) |
-| Project detail page + conditional navbar | `project_detail`, `project.html`, `_project_nav.html` | Navbar: Objects / Export; stat cards (firewalls, objects, types, **modified**, last import); **objects by type, per firewall** — one block per firewall with a clickable type-chip grid (count click → filtered object list, zero counts muted) + clickable per-firewall total and a "Total per type" footer; **Firewalls card** with the firewall table (per-row Import / Edit / View Objects / Remove) **and the "Attach existing" form at the bottom of the same card** (any firewall — config-less ones marked "no configuration yet"); **Export button below the firewall card** → `/projects/<id>/export` |
+| Project cards: Open / Delete | `index.html`, `dashboard()` | Delete = `confirm()` ("Move … to the trash?") + **soft delete** — the project/firewall lands in the Trash (restorable; its firewalls + objects follow); **the list refreshes in place** (the POST follows the 302, final 200 = success, `reloadAll()` re-fetches both lists — no page reload); the same `deleteEntity` pattern applies to firewall deletes on the dashboard and the `/firewalls` page (`firewallDashboard()`) |
+| Project detail page + conditional navbar | `project_detail`, `project.html`, `_project_nav.html` | Hero: project name, description below it, **trash-can icon button** (that project's deleted objects → `/trash?project_id=<id>`) + Edit Project button — **no back link: the Dashboard link appears in the top bar only**; a blue **pre-export hint above Statistics** (you can modify, adjust, select or remove objects on the object list pages before exporting the configuration selectively); four labeled sections with ruled section heads: **Statistics** (icon stat cards: firewalls, objects, types, **modified**, last import as monospace date), **Firewalls** ("All firewalls" type-chip panel + one card per firewall with a clickable type-chip grid (count click → filtered object list) + clickable nowrap per-firewall total), **Manage firewalls** (renamed from "Attached Firewalls") with the firewall table (per-row Import / View Objects / Remove — the per-row Edit link was removed; edit via the firewall dashboard; the Objects count shows **(N modified)** and, in the same style, **(N deleted)** hints when present) **and the "Attach existing firewall" form at the bottom of the same card** (any active firewall — config-less ones marked "no configuration yet"; firewalls in the trash are not attachable), **Export configuration (LAST section**: the **Export Configuration button in its section head** → `/projects/<id>/export` **+ the table of previous generated/pushed files, each downloadable**); project navbar = Dashboard / Objects (Export removed; the Dashboard link appears in the top bar only) on the shared `.nav-link` class; dashboard navbar = Dashboard / Trash (Firewalls link removed); a project in the trash 404s on its page |
+| Project page: previous generated / pushed configuration files (downloadable) | `ExportRecord` (models), `_record_export()` + `GET /projects/<id>/exports/<rid>/download` (views), `POST /api/export/file` / `POST /api/export/push` / legacy `POST /api/export` (routes), `project.html` | Every generated or pushed configuration is persisted to `instance/exports/<id>_<filename>` + an `export_records` row (best-effort, never breaks the export; push stream captures `current_user()` before the request context is gone); the project page's **Export configuration** section lists them newest first (File / Pushed badge, destination, objects per type, size, UTC date) with a **Download** button each (attachment download; flash + redirect when the file is no longer on disk); `instance/exports/` is gitignored |
 | Project page: per-row Remove firewall (unassign) | `remove_project_firewall`, `project.html` | `confirm()` dialog; `set_project(None)` — firewall + objects kept; reattach via "Attach existing" |
 | Firewall dashboard (card style) | `firewalls_page`, `firewalls.html`, `firewallDashboard()` | Card grid; New Firewall = 3-step wizard modal; per-card Objects / **Import** / **Edit** / Delete; `GET /api/firewalls` adds `project`, `objects_count`, `has_config`, `types_counts`; deep link `?edit=<id>` opens the edit modal |
 | Firewall edit modal (change any firewall field) | `_firewall_edit.html`, `firewallEdit()`, `GET/POST/PATCH /api/firewalls/<id>` | Same fields as wizard step 1 (name, vendor, model, mgmt IP, login/password or API token, description); `GET` returns the stored credentials for the form (the list endpoint hides them); empty values clear a field, the inactive credential side clears automatically; optional `project_id` (int/null) reassigns/unassigns and syncs the objects via `set_project()`; friendly error on the `(project_id, name)` unique constraint; Edit buttons on the dashboard + firewall dashboard cards and per row in the project table; list refreshes after save |
 | Import shortcut on firewall cards | `firewalls.html`, `index.html` | Per-card **Import** links to `/import?firewall_id=…` — the existing import wizard (file or URL, per-type) starts at the source step; re-importing upserts the objects |
 | Project edit page | `edit_project`, `project_edit.html` | Name + description (Flask-WTF `ProjectForm`) |
-| Object list (type-specific, staged edits) | `objects_page`, `objects.html`, `objectTable()` | Scoped by navigation context (no project/firewall filters); **columns per object type** from the normalized payloads; add/modify/delete actions **staged client-side**, committed atomically by **Validate** → `POST /api/objects/commit`; `POST /api/objects` for single creates; pagination: total pages, next/prev, rows-per-page 10/15/25/50/100/500; back-to-project link; **Export** button below the table; **"In export" tag column** (badge per tagged row) + **selection checkboxes** (row + page header, tagged rows preselected, **no server call on check/uncheck**) — the selection is applied by the toolbar **Include in the export (N)** / **Remove from export (N)** buttons → `POST /api/objects/export-include` (`include: true/false`); counts = selected rows that will change. **Modify modal: visual payload form** — one field per payload key (text/number/boolean/one-item-per-line list/JSON textarea; `buildPayloadFields`/`applyPayloadFields`) + "↻ Re-sync from Payload JSON"; the modal **Validate** = stage + commit the single change (list refreshes; on failure the change stays staged for the toolbar); row-level Delete stages the trash move |
+| Object list (type-specific, staged edits, deleted rows restorable) | `objects_page`, `objects.html`, `objectTable()` | Scoped by navigation context (no project/firewall filters); **columns per object type** from the normalized payloads; add/modify/delete actions **staged client-side**, committed atomically by **Validate** → `POST /api/objects/commit`; `POST /api/objects` for single creates; pagination: total pages, next/prev, rows-per-page 10/15/25/50/100/500; back-to-project link; **status filter dropdown** (All / Included in the export / Modified / Deleted → `GET /api/objects?filter=included|modified|deleted`); **the Validate button pulses a soft glow while staged changes wait to be committed** (`.validate-attention`, quiet micro-interaction, static glow under reduced motion); **"In export" tag column** (badge per tagged row) + **selection checkboxes** (row + page header, tagged rows preselected, **no server call on check/uncheck**) — the selection is applied by the toolbar **Include in the export (N)** / **Remove from export (N)** buttons → `POST /api/objects/export-include` (`include: true/false`); counts = selected rows that will change. **Deleted objects stay in the list** (the list always requests `include_deleted=true`): greyed-out row (`.table-row-deleted`) + red **deleted** badge, their Modify/Delete buttons become a single **Restore** button (`POST /api/objects/<id>/restore`, immediate — no staging); deleted rows can't be edited ("Restore it first") nor tagged for the export. **Modify modal: visual payload form** — one field per payload key (text/number/boolean/one-item-per-line list/JSON textarea; `buildPayloadFields`/`applyPayloadFields`) + "↻ Re-sync from Payload JSON"; the modal **Validate** = stage + commit the single change (list refreshes; on failure the change stays staged for the toolbar); row-level Delete stages the trash move; when scoped by a project, the page header shows the project's **trash-can icon** (→ `/trash?project_id=<id>`) and the nav bar drops **Trash** (Dashboard / Objects, same as the project page) |
 | Export page + 4-step wizard | `export_page`, `export.html`, `exportWizard()` | Stats: objects per firewall/type + **modified** per firewall/type; step 1 destination (attached firewalls), step 2 type filter (**Select all / Tagged only / Clear** shortcuts — "Tagged only" selects every type filter in the tagged scope; per-type **Tagged only** / **All objects** radios), step 3 summary + method, step 4 file (progress + download link via `POST /api/export/file` / `GET /api/export/file/<token>`) or push (connection status + Push + streaming progress via `POST /api/export/push`); **the generated configuration spans ALL firewalls in the database** — the destination receives every active object of the selected types, not only its own imported configuration (both file and push go through `_build_config()`); the "Object types to export" counts therefore span every firewall; **Validate & return to project** after success |
 | Export (legacy endpoint) | `POST /api/export` | Parser-generated download or mock push (kept for compatibility) |
 | Import wizard (file / URL, per-type) | `import_page`, `import.html`, `POST /api/import` | Vendor auto-detection (incl. PAN-OS set format). Both parsers store **address, address group, service, service group, security rule, interface, zone**: Fortinet = full FortiOS CLI export (`address`+`address6`, `addrgrp`, `service custom`, `service group`, `policy`, `system interface`, `system zone` or interface `set zone`); Palo Alto = PAN-OS 11.x XML device export (objects directly under `vsys/entry`), older wrapped exports, app-generated `<paloalto>` docs **and** set/`show` format. Samples in `files/`; see [§2](#2-architecture--layout) |
 | Streaming import with progress | `POST /api/import/stream` | NDJSON progress events (connect/download/parse/import); used by the firewall wizard for REST sources |
 | Connectivity check | `POST /api/connectivity` | TCP :443 + vendor API probe (Fortinet `/api?uuid=`, PAN-OS `/api/?type=op`), self-signed TLS handled, used by the firewall wizard and the export push step |
-| Trash + restore | `trash_page`, `trash.html`, `/api/trash` | Soft delete with reason |
+| Trash + restore (objects, firewalls, projects) | `trash_page`, `trash.html`, `/api/trash` + `/api/trash/<id>/restore` + `/api/objects/<id>/restore`, `Trash`/`Project`/`Firewall` models | Deleted **projects and firewalls** are soft-deleted (cascading into the trash with their firewalls/objects) and restorable; the trash is **separated by level** — the **dashboard trash** (`/trash`, navbar link) lists the entries **per type** (Projects / Firewalls sections, each with counts, deleted date/reason and a Restore button) and each project's **trash can** (`GET /api/trash?project_id=N`, the trash-can icon on the project page) lists **that project's deleted objects** only; restoring a project/firewall restores its descendants; a name stays reserved while its entry is in the trash (trash-aware error on create/rename) |
 | REST API + error handlers | `app/api/routes.py`, `errors.py` | Projects (+`firewall_ids` attach), firewalls (+detail/update `GET/POST/PATCH /api/firewalls/<id>`), import (+stream), objects (GET/POST/commit), trash, export (file/push), connectivity, auth placeholder |
 | Auth placeholder | `/api/auth/login`, `current_user()` | Session user only — see Known issues |
-| DB schema auto-creation + migrations | `factory.create_app` | `db.create_all()` + one-off migrations: `firewalls.project_id` nullable, `firewalls.model`/`auth_mode`/`api_token`, `config_objects.project_id` nullable (table rebuild) |
+| DB schema auto-creation + migrations | `factory.create_app` | `db.create_all()` + one-off migrations: `firewalls.project_id` nullable, `firewalls.model`/`auth_mode`/`api_token`, `config_objects.project_id` nullable (table rebuild), `config_objects.export_included`, `projects`/`firewalls` `is_deleted`+`deleted_at`, `trash` rebuilt multi-type |
 | Demo data seed | `instance/swissknife.db` | "Demo Project" + 2 demo firewalls |
 | Vector DB (standalone project) | `C:\Users\hedhl\source\repos\Vector_DB` | indexes this repo **including the `files/` sample configs** (`.conf`/`.xml`/`.txt`) and the frontend (`templates/*.html` + `static/js/app.js`, Tree-sitter AST chunking); top-3 chunk retrieval with cosine threshold, file-scoped queries via `--where file=...` — the only search path for the multi-MB samples, see [§7](#7-vector-db-integration-token-efficient-development) |
 
@@ -347,7 +408,16 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned.
 - **`db.create_all()` at startup** — fine for dev, but schema evolution relies
   on the one-off migrations in `factory.py` (no Alembic): `firewalls.project_id`
   nullable, `firewalls.model`/`auth_mode`/`api_token` columns,
-  `config_objects.project_id` nullable (table rebuild).
+  `config_objects.project_id` nullable (table rebuild),
+  `config_objects.export_included`, `projects`/`firewalls` `is_deleted`+
+  `deleted_at`, `trash` rebuilt multi-type (`item_type` + `project_id`/
+  `firewall_id`).
+- **Trash entries keep their names reserved.** There is no permanent delete
+  yet: while a project/firewall is in the trash its unique name stays taken
+  (creating/renaming a project or a same-named firewall in the same project is
+  rejected with a trash-aware error until the entry is restored). Unassigned
+  firewalls never collide on name (SQLite treats NULL `project_id`s as
+  distinct).
 - **`config_objects.project_id` is nullable.** Objects imported into an
   unassigned firewall have `project_id = NULL` until the firewall is attached
   (attach/remove syncs the objects via `Firewall.set_project()`).
@@ -371,9 +441,13 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned.
 - **Connectivity check is best-effort.** TCP :443 + one HTTP probe per vendor;
   it reports reachability and the API status code but does not perform a full
   credential verification beyond the probe's HTTP 401/403 answer.
-- **Export file artifacts are in-memory.** Generated download links
-  (`/api/export/file/<token>`) live in the process and expire after 1 hour or
-  on restart — re-generate if a link stops working.
+- **Export file artifacts are in-memory (temporary link only).** The
+  temporary download links (`/api/export/file/<token>`) live in the process
+  and expire after 1 hour or on restart — re-generate if a link stops
+  working. The **previous files themselves are persistent**: every generated
+  or pushed configuration is also kept in `instance/exports/` (+
+  `export_records`) and stays downloadable from the project page's **Export
+  configuration** section.
 - **Templates cached when debug is off** — restart the server after template
   edits.
 - **Browsers cache `static/js/app.js` for Flask's default static max-age
@@ -409,10 +483,10 @@ question):
   repo; **its `README.md` holds the full documentation** and is the reference
   for how to query/index the store.
 - **What it indexes:** this repository (default extensions
-  `.py`/`.js`/`.html`/`.css`/`.conf`/`.txt` — `.md` files are intentionally
-  not indexed; skips `node_modules/`, `dist/`, `build/`, minified
-  `.min.js`/`.min.css`, source maps `.map` and lockfiles; configurable via
-  `RAG_SOURCE_ROOT` / `--ext`). Chunks live in its own
+  `.py`/`.js`/`.html`/`.css`/`.conf`/`.txt`/`.md` — `.md` files are indexed with
+  the heading-aware semantic segmenter; skips `node_modules/`, `dist/`, `build/`,
+  minified `.min.js`/`.min.css`, source maps `.map` and lockfiles; configurable
+  via `RAG_SOURCE_ROOT` / `--ext`). Chunks live in its own
   `./.vectordb` (ChromaDB, cosine; local Ollama `nomic-embed-text` embeddings).
 - **Token saving:** retrieval returns only the top 3 chunks (cosine >= 0.45,
   ~300-500 words each with 50-word overlap) and the built LLM prompt contains
@@ -555,11 +629,11 @@ Notes:
    [§7](#7-vector-db-integration-token-efficient-development) (step 4).
 7. **Testing:** functional verification of the web UI and its flows is done
    with **obscura (the headless browser)**; there is no permanent automated
-   test suite in the repo. **Every file created during the testing process
-   (test scripts, run logs, dumps, screenshots, API probes) MUST be placed in
-   the `QA/` folder** — never at the repository root or inside `app/`,
-   `templates/`, `static/` or `files/` (stray files at the root would be
-   picked up by the next Vector DB re-index) — see
+   test suite in the repo. **Every created test file and generated log
+   (test scripts, run logs, launcher files, dumps, screenshots, API probes)
+   MUST strictly live in the `QA/` folder** — never at the repository root
+   or inside `app/`, `templates/`, `static/` or `files/` (stray files at the
+   root would be picked up by the next Vector DB re-index) — see
    [§9](#9-qa-folder-files-created-during-the-testing-phase).
 8. `QA/` is disposable: after a test round its contents may be deleted; nothing
    in `QA/` is a permanent part of the application and `QA/` scripts are not
@@ -574,16 +648,21 @@ for **every file created during the testing process**:
 
 - ad-hoc test scripts (Python / PowerShell) written to verify an endpoint,
   parser, or flow,
-- server run logs and console captures from test runs,
+- server run logs and console captures from test runs — **including the
+  background dev server's launcher + redirect logs** (`QA\_run_server.bat`,
+  `QA\_server_log.txt`, `QA\_server_err.txt` from the
+  [§3](#3-how-to-run) recipe),
 - generated artifacts (exported configuration files, DB dumps, screenshots)
   kept for analysis,
 - one-off API probe scripts run against `http://127.0.0.1:5000`.
 
 Rules:
 
-1. **Never create test files at the repository root or inside `app/`,
-   `templates/`, `static/` or `files/`** — they would be picked up by the
-   next Vector DB re-index and pollute the source tree.
+1. **Every created test file and generated log strictly lives in `QA/`** —
+   test scripts, run/redirect logs, launcher files, dumps, screenshots and
+   API probes alike: **never** at the repository root or inside `app/`,
+   `templates/`, `static/` or `files/` — stray files at the root would be
+   picked up by the next Vector DB re-index and pollute the source tree.
 2. Functional verification of the web UI itself remains **obscura
    (headless browser) only** — the `QA/` scripts *support* (not replace) it,
    e.g. direct REST checks and parser/DB assertions.
@@ -601,5 +680,5 @@ Rules:
 | `qa_parser_check.py` | Run `PaloAltoParser` / `FortinetParser` on the samples in `files/` and assert per-type object counts (address, service, rule, interface, zone, …) |
 | `qa_db_inspect.py` | Count rows in `projects` / `firewalls` / `config_objects` / `modification_history` / `trash` in `instance/swissknife.db`; verify upsert + history writes |
 | `qa_export_roundtrip.py` | Generate an export via `POST /api/export/file`, download it, compare object counts against the DB, and optionally re-parse the generated file |
-| `qa_server.ps1` (or `_run_server.bat`) | Start/stop the dev server in the background + fast TCP port probe — the recipe from [§3](#3-how-to-run), adapted for a test round |
+| `qa_server.ps1` (or `QA\_run_server.bat` + `QA\_server_log.txt` / `QA\_server_err.txt`) | Start/stop the dev server in the background + fast TCP port probe — the recipe from [§3](#3-how-to-run), adapted for a test round; launcher and logs strictly in `QA/` |
 | `qa_wizard_flows.md` (notes) | Check-list of obscura sessions: firewall/project wizards, staged edits + Validate, trash restore, export wizard |

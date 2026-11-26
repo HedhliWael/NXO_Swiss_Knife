@@ -1,297 +1,416 @@
 {% extends "base.html" %}
 
-{% block title %}{{ project.name }} - Swiss Knife{% endblock %}
+{% block title %}{{ project.name }} — NXO Swiss Knife{% endblock %}
 
 {% block nav %}
 {% include "_project_nav.html" %}
 {% endblock %}
 
 {% block content %}
-<div class="max-w-6xl mx-auto space-y-6">
+<div>
+    <!-- Page hero (the Dashboard link lives in the top bar only) -->
+    <div class="page-hero entrance">
+        <div class="page-hero-row">
+            <div>
+                <h1 class="page-hero-title">{{ project.name }}</h1>
+                <p class="page-hero-sub">{{ project.description or 'No description' }}</p>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <a
+                    href="{{ url_for('views.trash_page', project_id=project.id) }}"
+                    class="btn btn-secondary btn-sm"
+                    title="Deleted objects of this project (trash)"
+                    aria-label="Deleted objects of this project"
+                >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 6h18"/>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+                        <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        <line x1="10" y1="11" x2="10" y2="17"/>
+                        <line x1="14" y1="11" x2="14" y2="17"/>
+                    </svg>
+                </a>
+                <a href="{{ url_for('views.edit_project', project_id=project.id) }}" class="btn btn-secondary btn-sm">
+                    Edit Project
+                </a>
+            </div>
+        </div>
+    </div>
+
     <!-- Flash messages -->
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
-            {% for category, message in messages %}
-                <div class="mb-4 px-4 py-3 rounded-lg {% if category == 'error' %}bg-red-50 text-red-700{% else %}bg-green-50 text-green-700{% endif %}">
-                    {{ message }}
-                </div>
-            {% endfor %}
+            <div style="margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                {% for category, message in messages %}
+                    <div class="flash flash-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            </div>
         {% endif %}
     {% endwith %}
 
-    <div class="flex items-start justify-between gap-4">
-        <div>
-            <a href="{{ url_for('views.dashboard') }}" class="text-sm text-slate-500 hover:text-slate-700">← Dashboard</a>
-            <h1 class="mt-1 text-2xl font-semibold text-slate-900">{{ project.name }}</h1>
-            <p class="mt-1 text-sm text-slate-500">{{ project.description or 'No description' }}</p>
-        </div>
-        <a href="{{ url_for('views.edit_project', project_id=project.id) }}" class="text-sm font-medium text-indigo-600 hover:underline">Edit project</a>
+    <!-- ═══ Pre-export hint (above Statistics) ════════════════════════ -->
+    <div class="flash flash-info entrance" style="margin-top: 1.5rem;">
+        <span style="font-weight: 600;">Shape the export before you run it.</span>
+        You can modify, adjust, select or remove objects on the object list pages before
+        exporting the configuration selectively — tag what to include ("Include in the
+        export") and the export picks exactly that up.
     </div>
 
-    <!-- Detailed statistics -->
-    <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <div class="bg-white rounded-xl border border-slate-200 shadow p-5">
-            <p class="text-sm text-slate-500">Attached firewalls</p>
-            <p class="mt-1 text-3xl font-semibold text-slate-900">{{ stats.firewalls | length }}</p>
-        </div>
-        <div class="bg-white rounded-xl border border-slate-200 shadow p-5">
-            <p class="text-sm text-slate-500">Imported objects</p>
-            <p class="mt-1 text-3xl font-semibold text-slate-900">{{ stats.totals.objects }}</p>
-        </div>
-        <div class="bg-white rounded-xl border border-slate-200 shadow p-5">
-            <p class="text-sm text-slate-500">Object types</p>
-            <p class="mt-1 text-3xl font-semibold text-slate-900">{{ stats.totals.types }}</p>
-        </div>
-        <div class="bg-white rounded-xl border border-slate-200 shadow p-5">
-            <p class="text-sm text-slate-500">Modified objects</p>
-            <p class="mt-1 text-3xl font-semibold text-amber-600">{{ stats.totals.modified }}</p>
-        </div>
-        <div class="bg-white rounded-xl border border-slate-200 shadow p-5">
-            <p class="text-sm text-slate-500">Last import</p>
-            <p class="mt-1 text-lg font-semibold text-slate-900">
-                {% if stats.last_import %}
-                    {{ stats.last_import[:16].replace('T', ' ') }} UTC
-                {% else %}
-                    —
-                {% endif %}
-            </p>
-        </div>
-    </div>
-
-    {% if not stats.firewalls %}
-    <div class="rounded-xl border border-indigo-200 bg-indigo-50 p-5 text-sm text-indigo-800">
-        No firewalls are attached to this project yet. Create a firewall from the dashboard
-        (import its configuration), then attach it below — only firewalls with an imported
-        configuration can be attached.
-    </div>
-    {% endif %}
-
-    <!-- Objects by type, per firewall (clickable counts, one block per firewall) -->
-    {% if stats.firewalls %}
-    <div class="bg-white rounded-xl border border-slate-200 shadow overflow-hidden">
-        <div class="px-6 pt-5 pb-3">
-            <h2 class="text-lg font-semibold text-slate-900">Objects by type, per firewall</h2>
-            <p class="mt-1 text-sm text-slate-500">
-                Click a count to open the object list for that firewall and type.
-            </p>
+    <!-- ═══ Section · Statistics ════════════════════════════════════ -->
+    <section class="section entrance entrance-delay-1">
+        <div class="section-head">
+            <div class="section-head-main">
+                <p class="section-kicker">Metrics</p>
+                <h2 class="section-title">Statistics</h2>
+                <p class="section-sub">Objects and changes across the attached firewalls.</p>
+            </div>
         </div>
 
-        <div class="px-6 pb-5 space-y-4">
-            {% for fw in stats.firewalls %}
-            <div class="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                    <p class="font-semibold text-slate-900">
-                        {{ fw.name }}
-                        <span class="ml-2 text-xs font-normal text-slate-400">
-                            {{ fw.vendor }}{% if fw.model %} · {{ fw.model }}{% endif %}
-                        </span>
-                    </p>
-                    <a
-                        href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id) }}"
-                        class="text-sm font-semibold text-slate-900 hover:text-indigo-700 hover:underline"
-                        title="Open all objects on {{ fw.name }}"
-                    >
-                        Total: {{ fw.total }}
-                    </a>
-                </div>
-
-                <div class="mt-3 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-                    {% for t in stats.types %}
-                    {% if fw.types[t] > 0 %}
-                    <a
-                        href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id, object_type=t) }}"
-                        title="Open {{ t }} objects on {{ fw.name }}"
-                        class="rounded-lg border border-indigo-200 bg-white p-2 text-center hover:border-indigo-300 hover:bg-indigo-50"
-                    >
-                        <span class="block truncate text-xs text-slate-500">{{ t }}</span>
-                        <span class="mt-0.5 block text-lg font-semibold text-indigo-700">{{ fw.types[t] }}</span>
-                    </a>
-                    {% else %}
-                    <span class="rounded-lg border border-slate-200 bg-white p-2 text-center">
-                        <span class="block truncate text-xs text-slate-400">{{ t }}</span>
-                        <span class="mt-0.5 block text-lg font-semibold text-slate-300">0</span>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 1rem;">
+            <div class="stat-card">
+                <div class="stat-card-head">
+                    <p class="stat-label">Attached Firewalls</p>
+                    <span class="stat-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                     </span>
+                </div>
+                <p class="stat-value">{{ stats.firewalls | length }}</p>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-head">
+                    <p class="stat-label">Imported Objects</p>
+                    <span class="stat-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                    </span>
+                </div>
+                <p class="stat-value">{{ stats.totals.objects }}</p>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-head">
+                    <p class="stat-label">Object Types</p>
+                    <span class="stat-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                    </span>
+                </div>
+                <p class="stat-value">{{ stats.totals.types }}</p>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-head">
+                    <p class="stat-label">Modified Objects</p>
+                    <span class="stat-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </span>
+                </div>
+                <p class="stat-value" style="color: #d97706;">{{ stats.totals.modified }}</p>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-head">
+                    <p class="stat-label">Last Import</p>
+                    <span class="stat-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    </span>
+                </div>
+                <p class="stat-value-sm">
+                    {% if stats.last_import %}
+                        {{ stats.last_import[:16].replace('T', ' ') }} UTC
+                    {% else %}
+                        <span style="color: var(--color-ink-faint);">—</span>
                     {% endif %}
-                    {% endfor %}
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══ Section · Firewalls (objects by type) ═══════════════════ -->
+    <section class="section entrance entrance-delay-2">
+        <div class="section-head">
+            <div class="section-head-main">
+                <p class="section-kicker">Breakdown</p>
+                <h2 class="section-title">Firewalls</h2>
+                <p class="section-sub">Objects by type on each firewall — click a type to open its list.</p>
+            </div>
+            {% if stats.firewalls %}
+            <div class="section-head-actions">
+                <a
+                    href="{{ url_for('views.objects_page', project_id=project.id) }}"
+                    class="link"
+                    style="font-size: 0.875rem; font-weight: 500;"
+                >
+                    All objects: {{ stats.totals.objects }} →
+                </a>
+            </div>
+            {% endif %}
+        </div>
+
+        {% if stats.firewalls %}
+        <!-- Global type totals -->
+        <div style="background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.25rem 1.5rem; margin-bottom: 1.25rem;">
+            <p style="font-size: 0.6875rem; font-weight: 600; color: var(--color-ink-faint); text-transform: uppercase; letter-spacing: 0.07em; margin: 0 0 0.875rem;">
+                All firewalls
+            </p>
+            <div style="display: flex; flex-wrap: wrap; gap: 0.75rem;">
+                {% for t in stats.types %}
+                <a
+                    href="{{ url_for('views.objects_page', project_id=project.id, object_type=t) }}"
+                    class="type-chip"
+                >
+                    <span class="type-chip-label" style="font-size: 0.75rem;">{{ t }}</span>
+                    <span class="type-chip-value">{{ stats.col_totals[t] if stats.col_totals[t] else 0 }}</span>
+                </a>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- One card per firewall -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(min(430px, 100%), 1fr)); gap: 1.25rem;">
+            {% for fw in stats.firewalls %}
+            <div class="card">
+                <div style="padding: 1.25rem 1.5rem;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
+                        <div style="min-width: 0;">
+                            <h3 style="font-size: 1.0625rem; font-weight: 600; color: var(--color-ink); margin: 0; letter-spacing: -0.01em;">{{ fw.name }}</h3>
+                            <p style="font-size: 0.8125rem; color: var(--color-ink-muted); margin: 0.125rem 0 0;">
+                                {{ fw.vendor }}{% if fw.model %} · {{ fw.model }}{% endif %}
+                            </p>
+                        </div>
+                        <a
+                            href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id) }}"
+                            class="link"
+                            style="font-size: 0.875rem; font-weight: 500; flex-shrink: 0; white-space: nowrap;"
+                        >
+                            Total: {{ fw.total }} →
+                        </a>
+                    </div>
+
+                    <!-- Firewall-specific type breakdown -->
+                    <div style="margin-top: 1.125rem; display: flex; flex-wrap: wrap; gap: 0.75rem;">
+                        {% for t in stats.types %}
+                        <a
+                            href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id, object_type=t) }}"
+                            class="type-chip"
+                            style="min-width: 70px; padding: 0.4rem 0.6rem;"
+                        >
+                            <span class="type-chip-label" style="font-size: 0.6875rem;">{{ t }}</span>
+                            <span class="type-chip-value" style="font-size: 1.125rem;">{{ fw.types[t] if fw.types[t] else 0 }}</span>
+                        </a>
+                        {% endfor %}
+                    </div>
                 </div>
             </div>
             {% endfor %}
         </div>
-
-        <!-- Totals per type -->
-        <div class="border-t border-slate-200 bg-slate-50 px-6 py-4">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-                <p class="text-sm font-semibold text-slate-700">Total per type</p>
-                <p class="text-sm text-slate-500">
-                    All objects:
-                    <a
-                        href="{{ url_for('views.objects_page', project_id=project.id) }}"
-                        class="font-semibold text-slate-900 hover:text-indigo-700 hover:underline"
-                    >
-                        {{ stats.totals.objects }}
-                    </a>
-                </p>
-            </div>
-            <div class="mt-3 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-                {% for t in stats.types %}
-                <div class="rounded-lg border border-slate-200 bg-white p-2 text-center">
-                    <span class="block truncate text-xs text-slate-500">{{ t }}</span>
-                    <span class="mt-0.5 block text-lg font-semibold text-slate-700">
-                        {{ stats.col_totals[t] if stats.col_totals[t] else '—' }}
-                    </span>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Firewalls + attach existing (same card) -->
-    <div class="bg-white rounded-xl border border-slate-200 shadow overflow-hidden">
-        <div class="px-6 pt-5 pb-4">
-            <h2 class="text-lg font-semibold text-slate-900">Firewalls</h2>
-            <p class="mt-1 text-sm text-slate-500">
-                Attached to this project — import a configuration, edit it, view its objects, or remove it.
-            </p>
-        </div>
-
-        {% if stats.firewalls %}
-        <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-slate-200">
-                <thead class="bg-slate-50">
-                    <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Name</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Vendor / Model</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Mgmt IP</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Auth</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Last import</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Objects</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="bg-white divide-y divide-slate-200">
-                    {% for fw in stats.firewalls %}
-                    <tr>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{{ fw.name }}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
-                            {{ fw.vendor }}{% if fw.model %} · {{ fw.model }}{% endif %}
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ fw.management_ip or 'N/A' }}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
-                            {% if fw.auth_mode == 'token' %}API token{% else %}Login / password{% endif %}
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
-                            {% if fw.last_sync_at %}{{ fw.last_sync_at[:16].replace('T', ' ') }} UTC{% else %}—{% endif %}
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm">
-                            <a href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id) }}"
-                               class="font-semibold text-slate-900 hover:text-indigo-700 hover:underline">
-                                {{ fw.total }}
-                            </a>
-                            {% if fw.modified_total %}
-                                <span class="text-xs text-amber-600" title="Objects modified after import">
-                                    ({{ fw.modified_total }} modified)
-                                </span>
-                            {% endif %}
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm">
-                            <div class="flex items-center gap-4">
-                                <a
-                                    href="{{ url_for('views.import_page', firewall_id=fw.id) }}"
-                                    class="font-medium text-indigo-600 hover:underline"
-                                >
-                                    Import
-                                </a>
-                                <a
-                                    href="{{ url_for('views.firewalls_page', edit=fw.id) }}"
-                                    class="font-medium text-slate-600 hover:underline"
-                                >
-                                    Edit
-                                </a>
-                                <a
-                                    href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id) }}"
-                                    class="font-medium text-slate-600 hover:underline"
-                                >
-                                    View Objects
-                                </a>
-
-                                <form
-                                    method="POST"
-                                    action="{{ url_for('views.remove_project_firewall', project_id=project.id, firewall_id=fw.id) }}"
-                                    class="inline"
-                                    onsubmit="return confirm('Remove firewall ' + {{ fw.name | tojson }} + ' from this project? The firewall and its objects are kept, but no longer attached to this project.')"
-                                >
-                                    <button
-                                        type="submit"
-                                        class="font-medium text-slate-600 hover:underline"
-                                    >
-                                        Remove
-                                    </button>
-                                </form>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
         {% else %}
-        <p class="px-6 pb-4 text-sm text-slate-400">
-            No firewalls attached to this project yet.
-        </p>
+        <div class="flash flash-info">
+            No firewalls are attached to this project yet. Create a firewall from the dashboard
+            (import its configuration), then attach it below.
+        </div>
         {% endif %}
+    </section>
 
-        <!-- Attach existing (bottom of the firewall card) -->
-        <div class="border-t border-slate-200 bg-slate-50 px-6 py-5">
-            <h3 class="text-sm font-semibold text-slate-900">Attach existing</h3>
-            <p class="mt-1 text-xs text-slate-400">
-                Any firewall not attached to this project can be attached — also without an
-                imported configuration (import it later). Attaching moves the firewall from its current project.
-            </p>
-            {% if attachable_firewalls %}
-            <form
-                method="POST"
-                action="{{ url_for('views.attach_project_firewall', project_id=project.id) }}"
-                class="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end"
-            >
-                <div class="flex-1">
-                    <label for="fw-attach" class="block text-sm font-medium text-slate-700 mb-1">
-                        Attach existing firewall
-                    </label>
-                    <select
-                        id="fw-attach"
-                        name="firewall_id"
-                        class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    >
-                        <option value="" disabled selected>Select a firewall</option>
-                        {% for fw, count in attachable_firewalls %}
-                        <option value="{{ fw.id }}">{{ fw.name }} ({{ fw.vendor }}) — {{ fw.project.name if fw.project else 'Unassigned' }} — {{ count }} object{{ '' if count == 1 else 's' }}{{ ' (no configuration yet)' if not fw.has_config else '' }}</option>
+    <!-- ═══ Section · Manage firewalls (was "Attached Firewalls") ════ -->
+    <section class="section entrance entrance-delay-3">
+        <div class="section-head">
+            <div class="section-head-main">
+                <p class="section-kicker">Management</p>
+                <h2 class="section-title">Manage firewalls</h2>
+                <p class="section-sub">Connections, imports and attachments for this project.</p>
+            </div>
+        </div>
+
+        <div class="card" style="padding: 0;">
+            {% if stats.firewalls %}
+            <div class="table-container">
+                <table>
+                    <thead class="table-header">
+                        <tr>
+                            <th style="padding: 0.75rem 1rem;">Name</th>
+                            <th style="padding: 0.75rem 1rem;">Vendor / Model</th>
+                            <th style="padding: 0.75rem 1rem;">Mgmt IP</th>
+                            <th style="padding: 0.75rem 1rem;">Auth</th>
+                            <th style="padding: 0.75rem 1rem;">Last Import</th>
+                            <th style="padding: 0.75rem 1rem;">Objects</th>
+                            <th style="padding: 0.75rem 1rem; text-align: right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for fw in stats.firewalls %}
+                        <tr class="table-row">
+                            <td class="table-cell" style="font-weight: 500;">{{ fw.name }}</td>
+                            <td class="table-cell table-cell-muted" style="font-size: 0.8125rem;">
+                                {{ fw.vendor }}{% if fw.model %} · {{ fw.model }}{% endif %}
+                            </td>
+                            <td class="table-cell table-cell-muted" style="font-size: 0.8125rem; font-family: 'JetBrains Mono', monospace;">
+                                {{ fw.management_ip or 'N/A' }}
+                            </td>
+                            <td class="table-cell table-cell-muted" style="font-size: 0.8125rem;">
+                                {% if fw.auth_mode == 'token' %}API token{% else %}Login / password{% endif %}
+                            </td>
+                            <td class="table-cell table-cell-muted" style="font-size: 0.8125rem;">
+                                {% if fw.last_sync_at %}{{ fw.last_sync_at[:16].replace('T', ' ') }} UTC{% else %}—{% endif %}
+                            </td>
+                            <td class="table-cell" style="font-size: 0.875rem;">
+                                <a href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id) }}"
+                                   class="link"
+                                   style="font-weight: 600;">
+                                    {{ fw.total }}
+                                </a>
+                                {% if fw.modified_total %}
+                                    <span style="color: #d97706; font-size: 0.8125rem;" title="Objects modified after import">
+                                        ({{ fw.modified_total }} modified)
+                                    </span>
+                                {% endif %}
+                                {% if fw.deleted_total %}
+                                    <span style="color: #dc2626; font-size: 0.8125rem;" title="Objects in the trash (restorable)">
+                                        ({{ fw.deleted_total }} deleted)
+                                    </span>
+                                {% endif %}
+                            </td>
+                            <td class="table-cell" style="text-align: right;">
+                                <div style="display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem;">
+                                    <a href="{{ url_for('views.import_page', firewall_id=fw.id) }}" class="link" style="font-size: 0.8125rem;">Import</a>
+                                    <a href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id) }}" class="link" style="font-size: 0.8125rem;">Objects</a>
+                                    <form
+                                        method="POST"
+                                        action="{{ url_for('views.remove_project_firewall', project_id=project.id, firewall_id=fw.id) }}"
+                                        style="display: inline;"
+                                        onsubmit="return confirm('Remove {{ fw.name }} from this project?')"
+                                    >
+                                        <button type="submit" class="btn btn-ghost btn-xs" style="color: #dc2626;">Remove</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
                         {% endfor %}
-                    </select>
-                </div>
-                <button
-                    type="submit"
-                    class="px-5 py-2 rounded-lg text-sm font-medium border border-indigo-600 text-indigo-600 bg-white hover:bg-indigo-50"
-                >
-                    Attach
-                </button>
-            </form>
+                    </tbody>
+                </table>
+            </div>
             {% else %}
-            <p class="mt-3 text-sm text-slate-400">
-                No other firewall is available to attach.
+            <p style="padding: 1.25rem 1.5rem; font-size: 0.9375rem; color: var(--color-ink-muted); margin: 0;">No firewalls attached to this project yet.</p>
+            {% endif %}
+
+            <!-- Attach existing -->
+            <div style="border-top: 1px solid var(--color-border); background: var(--color-surface-sunken); padding: 1.5rem; border-radius: 0 0 var(--radius-lg) var(--radius-lg);">
+                <h3 style="font-size: 0.9375rem; font-weight: 600; color: var(--color-ink); margin: 0; letter-spacing: -0.01em;">Attach existing firewall</h3>
+                <p style="font-size: 0.8125rem; color: var(--color-ink-muted); margin: 0.375rem 0 0;">
+                    Attach a firewall from another project or an unassigned one. Attaching moves it to this project.
+                </p>
+                {% if attachable_firewalls %}
+                <form
+                    method="POST"
+                    action="{{ url_for('views.attach_project_firewall', project_id=project.id) }}"
+                    style="margin-top: 1.125rem; display: flex; gap: 1rem; align-items: flex-end;"
+                >
+                    <div style="flex: 1;">
+                        <select
+                            id="fw-attach"
+                            name="firewall_id"
+                            class="input"
+                        >
+                            <option value="" disabled selected>Select a firewall</option>
+                            {% for fw, count in attachable_firewalls %}
+                            <option value="{{ fw.id }}">{{ fw.name }} ({{ fw.vendor }}) — {{ fw.project.name if fw.project else 'Unassigned' }} — {{ count }} objects</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Attach</button>
+                </form>
+                {% else %}
+                <p style="margin-top: 0.75rem; font-size: 0.9375rem; color: var(--color-ink-muted);">No other firewalls available to attach.</p>
+                {% endif %}
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══ Section · Export configuration (last) ═══════════════════ -->
+    <section class="section entrance entrance-delay-4">
+        <div class="section-head">
+            <div class="section-head-main">
+                <p class="section-kicker">Delivery</p>
+                <h2 class="section-title">Export configuration</h2>
+                <p class="section-sub">Generate a vendor configuration file or push it to a firewall — previous files stay downloadable below.</p>
+            </div>
+            <div class="section-head-actions">
+                <a
+                    href="{{ url_for('views.export_page', project_id=project.id) }}"
+                    class="btn btn-accent"
+                >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Export Configuration
+                </a>
+            </div>
+        </div>
+
+        <!-- Previous generated / pushed configuration files -->
+        <div class="card" style="padding: 0;">
+            {% if exports %}
+            <div class="table-container">
+                <table>
+                    <thead class="table-header">
+                        <tr>
+                            <th style="padding: 0.75rem 1rem;">File</th>
+                            <th style="padding: 0.75rem 1rem;">Method</th>
+                            <th style="padding: 0.75rem 1rem;">Destination</th>
+                            <th style="padding: 0.75rem 1rem;">Objects</th>
+                            <th style="padding: 0.75rem 1rem;">Size</th>
+                            <th style="padding: 0.75rem 1rem;">Generated</th>
+                            <th style="padding: 0.75rem 1rem; text-align: right;">Download</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for exp in exports %}
+                        <tr class="table-row">
+                            <td class="table-cell" style="font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem; white-space: nowrap;">
+                                {{ exp.filename }}
+                            </td>
+                            <td class="table-cell">
+                                {% if exp.method == 'push' %}
+                                <span class="badge badge-warning">Pushed</span>
+                                {% else %}
+                                <span class="badge badge-primary">File</span>
+                                {% endif %}
+                            </td>
+                            <td class="table-cell table-cell-muted" style="font-size: 0.8125rem;">{{ exp.destination }}</td>
+                            <td class="table-cell" style="font-size: 0.875rem; white-space: nowrap;">
+                                {{ exp.object_count }}
+                                {% if exp.types_summary %}
+                                <span class="table-cell-muted" style="font-size: 0.75rem;" title="Objects per type">({{ exp.types_summary }})</span>
+                                {% endif %}
+                            </td>
+                            <td class="table-cell table-cell-muted" style="font-size: 0.8125rem; font-family: 'JetBrains Mono', monospace;">
+                                {{ exp.size_human }}
+                            </td>
+                            <td class="table-cell table-cell-muted" style="font-size: 0.8125rem; white-space: nowrap;">
+                                {{ exp.created }} UTC
+                            </td>
+                            <td class="table-cell" style="text-align: right;">
+                                {% if exp.available %}
+                                <a href="{{ exp.download_url }}" class="btn btn-secondary btn-xs">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                        <polyline points="7 10 12 15 17 10"/>
+                                        <line x1="12" y1="15" x2="12" y2="3"/>
+                                    </svg>
+                                    Download
+                                </a>
+                                {% else %}
+                                <span class="badge badge-muted">not on disk</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p style="padding: 1.25rem 1.5rem; font-size: 0.9375rem; color: var(--color-ink-muted); margin: 0;">
+                No configuration file has been generated or pushed for this project yet.
             </p>
             {% endif %}
         </div>
-    </div>
-
-    <!-- Export (below the firewall card) -->
-    <div class="flex justify-end">
-        <a
-            href="{{ url_for('views.export_page', project_id=project.id) }}"
-            class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg text-sm font-semibold shadow"
-        >
-            Export
-        </a>
-    </div>
+    </section>
 </div>
 {% endblock %}

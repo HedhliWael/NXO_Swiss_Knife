@@ -1,36 +1,30 @@
-<!-- Firewall edit modal (firewallEdit in app.js).
-
-     Included on pages whose Alpine scope provides `editing` (the firewall to
-     edit) and `reloadFirewalls()` (list refresh after saving). The modal is
-     only mounted while `editing` is set, so each opening starts a fresh
-     component that loads the current values from GET /api/firewalls/<id>. -->
+<!-- Firewall edit modal -->
 <template x-if="editing">
-    <!-- Single-quoted x-data: the tojson list contains double quotes, which
-         would terminate a double-quoted attribute. The arrow wrapper keeps
-         the outer component's `this` for reloadFirewalls. -->
     <div
         x-data='firewallEdit({{ vendor_choices | tojson }}, editing.id, () => reloadFirewalls())'
         x-init="init()"
         x-show="open"
-        class="fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-6"
+        class="modal-overlay"
     >
-        <div class="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto">
+        <div class="modal-content">
             <div class="flex items-start justify-between gap-4">
-                <h2 class="text-xl font-semibold text-slate-900">Edit firewall</h2>
-                <button @click="close()" class="text-slate-400 hover:text-slate-600">✕</button>
+                <h2 class="text-lg font-bold text-slate-900">Edit firewall</h2>
+                <button @click="close()" class="btn-ghost px-2 py-2 text-slate-400">
+                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                </button>
             </div>
 
             <div class="grid grid-cols-2 gap-4 mt-4">
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Name *</label>
-                    <input type="text" x-model="name"
-                           class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <label class="input-label">Name *</label>
+                    <input type="text" x-model="name" class="input">
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Vendor *</label>
-                    <select x-model="vendor"
-                            class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <label class="input-label">Vendor *</label>
+                    <select x-model="vendor" class="input">
                         {% for vendor in vendor_choices %}
                         <option value="{{ vendor }}">{{ vendor }}</option>
                         {% endfor %}
@@ -38,15 +32,13 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Model</label>
-                    <input type="text" x-model="model" placeholder="e.g. FortiGate 600E, PA-3220"
-                           class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <label class="input-label">Model</label>
+                    <input type="text" x-model="model" placeholder="e.g. FortiGate 600E" class="input">
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Management IP</label>
-                    <input type="text" x-model="management_ip" placeholder="192.168.1.1"
-                           class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <label class="input-label">Management IP</label>
+                    <input type="text" x-model="management_ip" placeholder="192.168.1.1" class="input">
                 </div>
             </div>
 
@@ -65,48 +57,36 @@
 
                 <div x-show="auth_mode === 'password'" class="grid grid-cols-2 gap-3 pt-1">
                     <div>
-                        <label class="block text-xs font-medium text-slate-600 mb-1">Login</label>
-                        <input type="text" x-model="api_username"
-                               class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                        <label class="input-label text-xs">Login</label>
+                        <input type="text" x-model="api_username" class="input">
                     </div>
                     <div>
-                        <label class="block text-xs font-medium text-slate-600 mb-1">Password</label>
-                        <input type="password" x-model="api_password"
-                               class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                        <label class="input-label text-xs">Password</label>
+                        <input type="password" x-model="api_password" class="input">
                     </div>
                 </div>
 
                 <div x-show="auth_mode === 'token'" class="pt-1">
-                    <label class="block text-xs font-medium text-slate-600 mb-1">API token</label>
-                    <input type="password" x-model="api_token"
-                           class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <label class="input-label text-xs">API token</label>
+                    <input type="password" x-model="api_token" class="input">
                 </div>
             </div>
 
             <div class="mt-4">
-                <label class="block text-sm font-medium text-slate-700 mb-1">Description</label>
-                <textarea x-model="description" rows="2"
-                          class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                <label class="input-label">Description</label>
+                <textarea x-model="description" rows="2" class="input"></textarea>
             </div>
 
             <p class="mt-3 text-xs text-slate-400">
-                Empty fields are cleared when saved. The inactive credential side
-                (token vs. login/password) is cleared automatically. Changing the
-                vendor affects export generation — imported objects are kept.
+                Empty fields are cleared when saved. The inactive credential side is cleared automatically.
             </p>
 
-            <div x-show="loadError" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
-                 x-text="loadError"></div>
-            <div x-show="saveError" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
-                 x-text="saveError"></div>
+            <div x-show="loadError" class="flash flash-error mt-3" x-text="loadError"></div>
+            <div x-show="saveError" class="flash flash-error mt-3" x-text="saveError"></div>
 
             <div class="flex justify-end gap-3 mt-4">
-                <button type="button" @click="close()"
-                        class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium">
-                    Cancel
-                </button>
-                <button type="button" @click="save()" :disabled="saving"
-                        class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50">
+                <button type="button" @click="close()" class="btn btn-secondary">Cancel</button>
+                <button type="button" @click="save()" :disabled="saving" class="btn btn-primary disabled:opacity-50">
                     <span x-show="!saving">Save changes</span>
                     <span x-show="saving">Saving...</span>
                 </button>

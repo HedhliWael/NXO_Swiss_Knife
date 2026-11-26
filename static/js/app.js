@@ -163,7 +163,7 @@ function dashboard() {
     },
 
     confirmDeleteProject(project) {
-      if (!confirm(`Delete project "${project.name}" and all of its firewalls and objects?`)) {
+      if (!confirm(`Move project "${project.name}" (with its firewalls and objects) to the trash?`)) {
         return;
       }
 
@@ -171,7 +171,7 @@ function dashboard() {
     },
 
     confirmDeleteFirewall(firewall) {
-      if (!confirm(`Delete firewall "${firewall.name}" and all of its objects?`)) {
+      if (!confirm(`Move firewall "${firewall.name}" (with its objects) to the trash?`)) {
         return;
       }
 
@@ -198,8 +198,7 @@ function firewallDashboard() {
         const data = await api("/api/firewalls");
         this.firewalls = data.items || [];
 
-        // Deep link: /firewalls?edit=<id> opens the edit modal directly
-        // (used by the "Edit" action in the project firewall table).
+        // Deep link: /firewalls?edit=<id> opens the edit modal directly.
         const editId = new URLSearchParams(window.location.search).get("edit");
         if (editId) {
           const fw = this.firewalls.find((f) => String(f.id) === editId);
@@ -229,7 +228,7 @@ function firewallDashboard() {
     },
 
     confirmDelete(firewall) {
-      if (!confirm(`Delete firewall "${firewall.name}" and all of its objects?`)) {
+      if (!confirm(`Move firewall "${firewall.name}" (with its objects) to the trash?`)) {
         return;
       }
 
@@ -728,6 +727,10 @@ function objectTable(columns) {
     searchField: "any",
     searchTerm: "",
 
+    // Status filter (toolbar dropdown): "all" (no filter) or one of
+    // "included" / "modified" / "deleted".
+    statusFilter: "all",
+
     // Selection for the "Include in the export" / "Remove from export"
     // buttons. The checkboxes only select rows — nothing is sent to the
     // server on check/uncheck. The selection mirrors the persisted
@@ -824,6 +827,12 @@ function objectTable(columns) {
           query.set(this.searchField, this.searchTerm);
         }
       }
+      if (this.statusFilter !== "all") {
+        query.set("filter", this.statusFilter);
+      }
+      // Deleted objects stay in the list (greyed out, with a Restore
+      // button) instead of disappearing from the page.
+      query.set("include_deleted", "true");
       query.set("page", String(this.page));
       query.set("per_page", String(this.perPage));
 
@@ -911,7 +920,9 @@ function objectTable(columns) {
     },
 
     get selectableRows() {
-      return this.displayRows.filter((row) => !row._new);
+      // Deleted rows cannot be tagged for the export (they are excluded
+      // from generated configurations until restored).
+      return this.displayRows.filter((row) => !row._new && !row.is_deleted);
     },
 
     get allPageChecked() {
@@ -985,6 +996,11 @@ function objectTable(columns) {
     },
 
     openEdit(row) {
+      if (row.is_deleted) {
+        alert(`"${row.name}" is in the trash. Restore it first to modify it.`);
+        return;
+      }
+
       const staged = this.pendingFor(row.id);
       if (staged && staged.op === "delete") {
         alert("This object is staged for deletion. Discard the deletion first.");
@@ -1195,6 +1211,10 @@ function objectTable(columns) {
     },
 
     stageDeleteFromRow(row) {
+      if (row.is_deleted) {
+        return;
+      }
+
       if (this.pendingFor(row.id)) {
         alert("This object already has a staged change. Discard it first.");
         return;
@@ -1205,6 +1225,31 @@ function objectTable(columns) {
       }
 
       this.pending.push({ op: "delete", id: row.id, name: row.name, reason: "Deleted from UI" });
+    },
+
+    // Direct restore of a deleted row (POST /api/objects/<id>/restore) —
+    // no staging: the row goes back to the active list immediately.
+    async restoreRow(row) {
+      if (!confirm(`Restore "${row.name}"?`)) {
+        return;
+      }
+
+      this.committing = true;
+      this.commitMsg = "";
+      this.commitError = "";
+
+      try {
+        await api(`/api/objects/${row.id}/restore`, { method: "POST" });
+        this.commitMsg = `Object "${row.name}" restored.`;
+        await this.load();
+        setTimeout(() => {
+          this.commitMsg = "";
+        }, 6000);
+      } catch (error) {
+        this.commitError = error.message;
+      } finally {
+        this.committing = false;
+      }
     },
 
     openAdd() {
@@ -1575,20 +1620,35 @@ function exportWizard(stats, projectId) {
 // Import Wizard (standalone /import page)
 // ---------------------------------------------------------------------------
 
-function importWizard() {
+function importWizard(firewalls) {
   const params = new URLSearchParams(window.location.search);
   const preselectedFirewall = params.get("firewall_id") || "";
 
   return {
+    firewalls: Array.isArray(firewalls) ? firewalls : [],
     // When a firewall is preselected (e.g. the per-row Import action on the
     // project page), skip straight to the source step.
     step: preselectedFirewall ? 2 : 1,
     firewall_id: preselectedFirewall,
     source_type: "file",
     url: "",
+    types: OBJECT_TYPES.slice(),
     object_types: OBJECT_TYPES.slice(),
     error: "",
     result: null,
+    busy: false,
+    fileName: "",
+
+    firewall() {
+      return (
+        this.firewalls.find((fw) => String(fw.id) === String(this.firewall_id)) ||
+        null
+      );
+    },
+
+    setFileName(name) {
+      this.fileName = name;
+    },
 
     next() {
       if (this.step === 1 && !this.firewall_id) {
@@ -1622,42 +1682,60 @@ function importWizard() {
     async submitImport() {
       this.error = "";
       this.result = null;
-
-      const formData = new FormData();
-
-      formData.append("firewall_id", this.firewall_id);
-      formData.append("source_type", this.source_type);
-      formData.append("object_types", this.object_types.join(","));
-
-      if (this.source_type === "file") {
-        const fileInput = this.$refs.fileInput;
-        const file = fileInput ? fileInput.files[0] : null;
-
-        if (!file) {
-          this.error = "Choose a configuration file to upload.";
-          return;
-        }
-
-        formData.append("config_file", file);
-      } else {
-        formData.append("url", this.url);
-      }
+      this.busy = true;
 
       try {
+        const formData = new FormData();
+
+        formData.append("firewall_id", this.firewall_id);
+        formData.append("source_type", this.source_type);
+        formData.append("object_types", this.object_types.join(","));
+
+        if (this.source_type === "file") {
+          const fileInput = this.$refs.fileInput;
+          const file = fileInput ? fileInput.files[0] : null;
+
+          if (!file) {
+            this.error = "Choose a configuration file to upload.";
+            return;
+          }
+
+          formData.append("config_file", file);
+        } else {
+          if (!this.url.trim()) {
+            this.error = "Enter the URL of the configuration file.";
+            return;
+          }
+
+          formData.append("url", this.url);
+        }
+
         const response = await fetch("/api/import", {
           method: "POST",
           body: formData
         });
 
-        const data = await response.json();
+        // The API answers JSON; a non-JSON body (e.g. an HTML error page)
+        // must not blow up the error message.
+        let data = null;
+
+        try {
+          data = await response.json();
+        } catch (_) {
+          // Not a JSON body — keep the HTTP status below.
+        }
 
         if (!response.ok) {
-          throw new Error(data.error || "Import failed.");
+          throw new Error(
+            (data && data.error) || `Import failed (HTTP ${response.status}).`
+          );
         }
 
         this.result = data;
       } catch (error) {
         this.error = error.message;
+      } finally {
+        this.busy = false;
       }
     }
   };
@@ -1665,19 +1743,31 @@ function importWizard() {
 
 
 // ---------------------------------------------------------------------------
-// Trash Bin
+// Trash Bin — two separate trashes:
+// - Dashboard trash (no projectId): deleted projects + firewalls only.
+// - Project trash (projectId, the trash can on the project page): that
+//   project's deleted objects only.
 // ---------------------------------------------------------------------------
 
-function trashBin() {
+function trashBin(projectId) {
   return {
+    projectId: projectId || null,
+    projects: [],
+    firewalls: [],
     items: [],
     loading: true,
     error: "",
+    busy: "",
 
     async init() {
       try {
-        const data = await api("/api/trash");
-        this.items = data.items || [];
+        const url = this.projectId ? `/api/trash?project_id=${this.projectId}` : "/api/trash";
+        const data = await api(url);
+        this.projects = data.projects || [];
+        this.firewalls = data.firewalls || [];
+        // Objects belong to the project trash can only — the dashboard
+        // trash lists projects and firewalls.
+        this.items = this.projectId ? data.items || [] : [];
       } catch (error) {
         this.error = error.message;
       } finally {
@@ -1685,13 +1775,22 @@ function trashBin() {
       }
     },
 
-    restore(item) {
-      fetch(`/api/trash/${item.trash_id}/restore`, {
-        method: "POST"
-      })
-        .then((response) => response.json())
-        .then(() => location.reload())
-        .catch((error) => alert(error.message));
+    // kind = "project" | "firewall" | "object" — used to disable every
+    // Restore button while one restore is in flight.
+    async restore(kind, trashId, label) {
+      if (!confirm(`Restore ${label}?`)) {
+        return;
+      }
+
+      this.busy = `${kind}-${trashId}`;
+
+      try {
+        await api(`/api/trash/${trashId}/restore`, { method: "POST" });
+        location.reload();
+      } catch (error) {
+        alert(error.message);
+        this.busy = "";
+      }
     }
   };
 }

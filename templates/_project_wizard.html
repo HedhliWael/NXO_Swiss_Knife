@@ -1,60 +1,54 @@
-<!-- 3-step project creation wizard (projectWizard in app.js) -->
+<!-- 3-step project creation wizard -->
 <div x-data="projectWizard()" x-init="init()" class="space-y-5">
     <div class="flex items-start justify-between gap-4">
-        <h2 class="text-xl font-semibold text-slate-900">New Project</h2>
-        <button @click="showProjectWizard = false" class="text-slate-400 hover:text-slate-600">✕</button>
+        <h2 class="text-lg font-bold text-slate-900">New Project</h2>
+        <button @click="showProjectWizard = false" class="btn-ghost px-2 py-2 text-slate-400">
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+        </button>
     </div>
 
     <!-- Step indicator -->
-    <div class="flex gap-2">
-        <span :class="step === 1 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
-              class="px-3 py-1.5 rounded-full text-xs font-medium">1. Basic data</span>
-        <span :class="step === 2 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
-              class="px-3 py-1.5 rounded-full text-xs font-medium">2. Attach firewalls</span>
-        <span :class="step === 3 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'"
-              class="px-3 py-1.5 rounded-full text-xs font-medium">3. Validate</span>
+    <div class="step-indicator">
+        <span :class="['step-dot', step === 1 ? 'step-dot-active' : step > 1 ? 'step-dot-done' : 'step-dot-inactive']">1. Basic data</span>
+        <span :class="['step-dot', step === 2 ? 'step-dot-active' : step > 2 ? 'step-dot-done' : 'step-dot-inactive']">2. Attach firewalls</span>
+        <span :class="['step-dot', step === 3 ? 'step-dot-active' : 'step-dot-inactive']">3. Validate</span>
     </div>
 
     <!-- Step 1: basic data -->
     <section x-show="step === 1" class="space-y-4">
         <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">Project name *</label>
-            <input type="text" x-model="name"
-                   class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <label class="input-label">Project name *</label>
+            <input type="text" x-model="name" class="input">
         </div>
 
         <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">Description</label>
-            <textarea x-model="description" rows="3"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+            <label class="input-label">Description</label>
+            <textarea x-model="description" rows="3" class="input"></textarea>
         </div>
 
-        <div class="flex justify-end">
-            <button type="button" @click="next()"
-                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
-                Next
-            </button>
+        <div class="flex justify-end pt-2">
+            <button type="button" @click="next()" class="btn btn-primary">Next</button>
         </div>
     </section>
 
-    <!-- Step 2: attach existing firewalls (with or without an imported configuration) -->
+    <!-- Step 2: attach existing firewalls -->
     <section x-show="step === 2" class="space-y-4">
         <h3 class="text-lg font-semibold text-slate-900">Attach existing firewalls</h3>
         <p class="text-sm text-slate-500">
-            Any firewall can be attached — <strong>also without an imported configuration</strong>
-            (import it later from the project page). Attaching moves a firewall to the new project.
+            Any firewall can be attached — <strong>also without an imported configuration</strong>.
         </p>
 
         <div x-show="loadingAttachable" class="text-sm text-slate-400">Loading firewalls...</div>
 
         <div x-show="!loadingAttachable && attachable.length === 0"
-             class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 space-y-3">
-            <p>No firewall exists yet, so there is nothing to attach.</p>
-            <p>Create a firewall first — then come back to this wizard (importing its configuration can happen later).</p>
+             class="flash flash-warning space-y-3">
+            <p style="margin: 0;">No firewall exists yet, so there is nothing to attach.</p>
             <button
                 type="button"
                 @click="showProjectWizard = false; showFirewallWizard = true"
-                class="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+                class="btn bg-amber-600 hover:bg-amber-700 text-white text-xs">
                 Create a firewall first
             </button>
         </div>
@@ -63,21 +57,17 @@
             <div class="flex gap-3 text-xs">
                 <button type="button"
                         @click="attachable.forEach((fw) => { if (!selected.includes(fw.id)) selected.push(fw.id); })"
-                        class="font-medium text-indigo-600 hover:underline">
-                    Select all
-                </button>
-                <button type="button" @click="selected = []"
-                        class="font-medium text-slate-500 hover:underline">
-                    Clear
-                </button>
+                        class="btn-link px-0 py-0">Select all</button>
+                <button type="button" @click="selected = []" class="btn-ghost px-0 py-0">Clear</button>
             </div>
 
             <template x-for="fw in attachable" :key="fw.id">
-                <label class="flex items-start gap-3 rounded-lg border border-slate-200 p-3 cursor-pointer hover:bg-slate-50">
+                <label :class="selected.includes(fw.id) ? 'border-blue-700 bg-blue-50' : 'border-slate-200'"
+                       class="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-slate-50 transition-colors duration-150">
                     <input type="checkbox" :checked="selected.includes(fw.id)" @change="toggle(fw.id)"
-                           class="mt-1 rounded border-slate-300">
+                           class="mt-1 rounded">
                     <span class="block">
-                        <span class="font-medium text-slate-900"
+                        <span class="font-medium text-slate-900 text-sm"
                               x-text="`${fw.name} (${fw.vendor})${fw.model ? ' — ' + fw.model : ''}`"></span>
                         <span class="block text-xs text-slate-500 mt-0.5"
                               x-text="`${fw.has_config ? fw.objects_count + ' objects' : 'no configuration yet'} • currently: ${fw.project ? fw.project.name : 'unassigned'}`"></span>
@@ -86,15 +76,9 @@
             </template>
         </div>
 
-        <div class="flex justify-between">
-            <button type="button" @click="back()"
-                    class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium">
-                Back
-            </button>
-            <button type="button" @click="next()"
-                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
-                Next
-            </button>
+        <div class="flex justify-between pt-2">
+            <button type="button" @click="back()" class="btn btn-secondary">Back</button>
+            <button type="button" @click="next()" class="btn btn-primary">Next</button>
         </div>
     </section>
 
@@ -103,52 +87,33 @@
         <h3 class="text-lg font-semibold text-slate-900">Validate and create</h3>
 
         <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm space-y-2">
-            <p>
-                <span class="text-slate-500">Name:</span>
-                <span class="font-medium text-slate-900" x-text="name.trim()"></span>
-            </p>
-            <p>
-                <span class="text-slate-500">Description:</span>
-                <span class="text-slate-900" x-text="description.trim() || '—'"></span>
-            </p>
-            <p>
-                <span class="text-slate-500">Firewalls to attach:</span>
-                <span class="font-medium text-slate-900" x-text="selected.length"></span>
-            </p>
+            <p><span class="text-slate-500">Name:</span> <span class="font-medium text-slate-900" x-text="name.trim()"></span></p>
+            <p><span class="text-slate-500">Description:</span> <span class="text-slate-900" x-text="description.trim() || '—'"></span></p>
+            <p><span class="text-slate-500">Firewalls to attach:</span> <span class="font-medium text-slate-900" x-text="selected.length"></span></p>
 
             <template x-for="fwId in selected" :key="fwId">
-                <p class="pl-3 text-slate-700">
-                    •
-                    <span x-text="fw(fwId) ? fw(fwId).name : fwId"></span>
-                    <span class="text-xs text-slate-400"
-                          x-text="fw(fwId) && fw(fwId).project ? `(moves from ${fw(fwId).project.name})` : ''"></span>
+                <p class="pl-3 text-slate-700 text-xs">
+                    • <span x-text="fw(fwId) ? fw(fwId).name : fwId"></span>
+                    <span class="text-slate-400" x-text="fw(fwId) && fw(fwId).project ? `(moves from ${fw(fwId).project.name})` : ''"></span>
                 </p>
             </template>
 
-            <p x-show="selected.length === 0" class="text-amber-700">
-                No firewall selected — the project will be created empty. You can attach firewalls later
-                from the project page (also without an imported configuration).
+            <p x-show="selected.length === 0" class="text-amber-700 text-xs">
+                No firewall selected — the project will be created empty.
             </p>
         </div>
 
-        <div x-show="stepError" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
-             x-text="stepError"></div>
-        <div x-show="submitError" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
-             x-text="submitError"></div>
+        <div x-show="stepError" class="flash flash-error" x-text="stepError"></div>
+        <div x-show="submitError" class="flash flash-error" x-text="submitError"></div>
 
-        <div class="flex justify-between">
-            <button type="button" @click="back()"
-                    class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium">
-                Back
-            </button>
-            <button type="button" @click="create()" :disabled="submitting"
-                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg text-sm font-semibold disabled:opacity-50">
+        <div class="flex justify-between pt-2">
+            <button type="button" @click="back()" class="btn btn-secondary">Back</button>
+            <button type="button" @click="create()" :disabled="submitting" class="btn btn-primary disabled:opacity-50">
                 <span x-show="!submitting">Create project</span>
                 <span x-show="submitting">Creating...</span>
             </button>
         </div>
     </section>
 
-    <div x-show="stepError && step === 1" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
-         x-text="stepError"></div>
+    <div x-show="stepError && step === 1" class="flash flash-error" x-text="stepError"></div>
 </div>

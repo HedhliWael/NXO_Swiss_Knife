@@ -10,3 +10,6 @@ QA/
 
 # Local SQLite database (created at startup + demo seed; not part of the repo)
 instance/swissknife.db
+
+# Generated configuration files (export records; kept on disk per project)
+instance/exports/

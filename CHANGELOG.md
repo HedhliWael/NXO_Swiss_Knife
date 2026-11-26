@@ -10,7 +10,367 @@ Chronological log of all modifications to the project. **Newest first.**
 
 ---
 
+## 2026-12-16
+
+**Object list: status filter (included / modified / deleted), pulsing glow on the Validate button, Export button removed — and the project page's "Manage firewalls" table now counts deleted objects too:**
+
+*Feature — status filter on the object list page (`filter` parameter + dropdown):*
+- `app/api/routes.py`: `GET /api/objects` accepts a new `filter` parameter — `included` (active objects tagged "Include in the export"), `modified` (objects with at least one `update` entry in the modification history), `deleted` (soft-deleted objects; the list always requests `include_deleted=true`, this narrows the scope to them). Unknown values are ignored.
+- `static/js/app.js`: `objectTable()` gains a `statusFilter` state ("all" / "included" / "modified" / "deleted"); `load()` passes it as `?filter=`.
+- `templates/objects.html`: a filter dropdown in the toolbar (after the search input) — "All objects / Included in the export / Modified / Deleted" — resets to page 1 on change.
+
+*Feature — Validate button reminder glow:*
+- `templates/objects.html`: the toolbar Validate button gets the `validate-attention` class while `pending.length > 0 && !committing`.
+- `templates/base.html`: `.validate-attention` = soft pulsing green glow (`validateGlow` keyframes, 2.2 s); static glow under `prefers-reduced-motion: reduce`.
+
+*Refactor — Export button removed from the object list page:*
+- `templates/objects.html`: the conditional Export button below the table is gone (exporting stays available from the project page's "Export configuration" section and the export page).
+
+*Feature — deleted count in the "Manage firewalls" table (project page):*
+- `app/views.py`: `_project_stats()` adds per-firewall/per-type `deleted` counts + `deleted_total` (same pattern as the `modified` counts; the `modified` counts keep their "active only" definition, so a deleted+modified object is counted as deleted).
+- `templates/project.html`: the Manage firewalls table's Objects cell shows a red "(N deleted)" span next to the orange "(N modified)" span, only when N > 0.
+
+- Files touched: `app/api/routes.py`, `app/views.py`, `templates/objects.html`, `templates/project.html`, `templates/base.html`, `static/js/app.js`, `PROJECT.md`, `CHANGELOG.md`.
+- Verified: `QA/qa_filter_probe.py` (11 assertions on `GET /api/objects` — per-type deleted/modified/included totals match the DB ground truth from `QA/qa_type_counts.py`; filter combined with `search`; unknown filter ignored; the deleted+modified object appears under "modified") + headless browser: `/objects?project_id=1&firewall_id=1&object_type=address` — the dropdown filters correctly (1 deleted row greyed out with badge + Restore, 1 modified, 0 included → "No objects found"); `/objects?project_id=3&firewall_id=5` — "Included" shows exactly the 7 tagged rows; staging a new object makes the Validate button gain `validate-attention` (CSS rule verified via CSSOM) and the "1 staged" badge appears, then both return to the clean state after Discard; no Export button on the object page; `/projects/1` — the Manage firewalls table shows FGT-600E with "(2 modified)" + "(2 deleted)"; console clean (only the documented Tailwind CDN warning). Demo database left untouched (staged change discarded, no committed changes).
+
+---
+
 ## 2026-11-25
+
+**UI rework — proportions without overlap + a proper alert system (icons, accent bars, tints):**
+
+*Fix — stat cards: label/icon collision removed by reworking the card proportions:*
+- `templates/base.html`: `.stat-card` is now a flex column with a `.stat-card-head` row (label left, icon right, value below) — the icon was previously `position: absolute` top-right and collided with the label text on every card at every width (measured ≈ 30 px overlap, e.g. “Attached Firewalls” / “Imported Objects” ran under the icon on the project page). The icon chip gets an accent tint (`--color-accent-light` background, `--color-accent` glyph), `.stat-label` gains `min-width: 0; overflow-wrap: anywhere` so it wraps instead of colliding, `.stat-value-sm` tightens its top margin for the new head row.
+- `templates/index.html`, `templates/project.html`: all 8 stat cards (3 dashboard + 5 project) rebuilt to the head-row structure.
+
+*Fix — section heads wrap on narrow screens (no more title/button collision):*
+- `templates/base.html`: `.section-head` gains `flex-wrap: wrap` — at 390 px the project page’s “Export configuration” section head overlapped: the squeezed title box (word “configuration” can’t break) and the `flex-shrink: 0` Export Configuration button collided (measured 462 px² overlap). The actions now drop onto their own row under the title on narrow screens; desktop is unchanged.
+
+*Fix — wizard forms: invisible active step + invisible progress fill:*
+- `templates/_firewall_wizard.html`, `templates/_project_wizard.html`: the step indicator now uses the design-system `.step-indicator` / `.step-dot` classes (active = accent, done = green, inactive = muted) with the step state bound via `:class` arrays. The old pills used `bg-primary-500`, which is **not in the Tailwind config** — the active step rendered as white text on a transparent background (invisible). The firewall wizard’s progress fill used the same undefined class (invisible progress bar) and now uses `.progress-bar` / `.progress-fill`.
+- `templates/_project_wizard.html`: the selected-firewall highlight in step 2 now uses `border-blue-700 bg-blue-50` (the old `ring-2 ring-primary-500` rendered no ring at all).
+
+*Feature — alert (flash) system redesigned to be more pleasing to the eye:*
+- `templates/base.html`: the `.flash` alerts are rebuilt — each variant draws an inline SVG icon via `::before` (check-circle / ×-circle / alert-triangle / info-circle, so call sites stay plain text), carries a **4 px left accent bar** in the variant colour (success `#059669`, error `#dc2626`, warning `#d97706`, info `#2563eb`), a soft tint, a light shadow, `line-height: 1.55` and `overflow-wrap: anywhere`. Both server flash messages and the Alpine inline alerts pick the look up automatically.
+- Inline wizard alerts normalized from `flash-error rounded-lg px-4 py-3 text-sm` (no base class) to `flash flash-error`: `_firewall_wizard.html` (import error, 2× step error), `_project_wizard.html` (2× step error, submit error), `_firewall_edit.html` (load/save error).
+- Hand-rolled info/success/warning boxes converted to the alert system: `project.html` (pre-export hint + “no firewalls” note → `flash flash-info`), `_firewall_wizard.html` (import success panel → `flash flash-success`), `_project_wizard.html` (“no firewall” note → `flash flash-warning`), `export.html` (file result + success panels → `flash flash-success`).
+
+- Files touched: `templates/base.html`, `templates/index.html`, `templates/project.html`, `templates/_firewall_wizard.html`, `templates/_project_wizard.html`, `templates/_firewall_edit.html`, `templates/export.html`, `PROJECT.md`, `CHANGELOG.md`.
+- Verified: headless browser — automated overlap + horizontal-overflow probe (in-page iframes with real 390/768/1280 px viewports, modal overlays excluded) over all 8 pages: **0 overlaps, 0 horizontal overflow** after the change (before: stat-icon/label collisions on the dashboard + project page at every width; section-title/button collision on the project page at 390 px). Screenshots: dashboard + project stat cards (1440), mobile 390 (hero, stats single-column, Export section head with the button wrapped under the title, wizard modal), wizard step dots visible (active blue / done green), progress fill visible at 45 %, error + success alerts with icon + accent bar (objects page + firewall wizard step 1 validation). Console clean (only the documented Tailwind CDN warning). No backend changes; demo database untouched.
+
+---
+
+**Import page fixed: the standalone import wizard now actually imports (it previously was a plain HTML form POSTing to the GET-only page route → 405 “Method Not Allowed”):**
+
+*Bug fix — broken import page (`/import`):*
+- `templates/import.html`: the page was a stale pre-Alpine `<form method="POST">` whose action was the page's own route (`views.import_page`, `GET /import` only) — clicking **Import** hit Werkzeug's 405 “Method Not Allowed — The method is not allowed for the requested URL.” and the upload never reached the API. Replaced with the standalone 3-step wizard documented in `PROJECT.md` (firewall → source & types → review), wired to the existing `importWizard()` Alpine component: firewall select (JSON from the view), file upload (`x-ref="fileInput"`) or remote URL, per-type checkboxes (`toggleType`), a review summary (firewall / source / selected types), the **Import** button → `POST /api/import` (FormData), a success panel with per-type count chips + parser warnings + a **View objects** link, and an **Import again** action; empty state when no firewall exists.
+- `static/js/app.js`: `importWizard(firewalls)` now receives the firewall list (id/name/vendor/model) from the view and adds `types` (the full 9-type list for the checkbox grid), `busy` (button disabled while the import is in flight, “Importing...” label), `fileName` + `setFileName()` (the chosen file is shown in the review) and `firewall()` (resolves the selected firewall for the review summary). `submitImport()` validates the URL field, always clears `busy` (`finally`), and parses the JSON answer defensively — a non-JSON error body (like the old 405 HTML page) now yields “Import failed (HTTP 405).” instead of a JSON parse error.
+- `app/views.py`: `import_page()` passes a JSON-safe `firewalls_json` (id/name/vendor/model, `<` escaped like `export_page` — the `x-data` attribute is single-quoted) and its docstring documents that the page is GET-only while the wizard POSTs to `/api/import`.
+
+- Files touched: `templates/import.html`, `static/js/app.js`, `app/views.py`, `CHANGELOG.md`.
+- Verified: `QA/probe_import.py` — `GET /import` → 200 rendering the wizard (no `<form>` left), `GET /import?firewall_id=3` → 200 (deep link), `GET /api/import` → 405 (expected for the API; the UI no longer sends GET there), `POST /api/import` file uploads with the real reference samples → 200 (FortiGate `.conf` into FGT-30E: 1198 objects; PAN-OS `.xml` into Demo-PA-3410: 4111 objects); headless browser — the wizard walked end to end in the UI (FGT-30E selected, file chosen, review shows “File — qa-test.conf”, **Import** → `POST /api/import` → green success panel “Imported 2 objects.” with type chips, parser warnings, **View objects** + **Import again**; screenshot taken); console clean (only the documented Tailwind CDN warning). Demo database restored afterwards (`QA/cleanup_import_round.py`: the two demo firewalls were empty before the round — all verification objects + history rows removed, `last_sync_at` cleared).
+
+**Trash separated: the dashboard trash lists projects + firewalls only, each project's trash can lists that project's deleted objects only:**
+
+*Feature — two separate trashes (dashboard trash / per-project trash can):*
+- `app/api/routes.py`: `GET /api/trash` without a scope (the dashboard trash) now
+  returns only deleted projects and firewalls — object entries are skipped and
+  `items` stays empty; with `?project_id=N` (the project trash can) it returns
+  only that project's deleted objects, as before. Docstring updated.
+- `templates/trash.html`: the **Objects** section is now rendered only in the
+  scoped (project trash can) view (`x-show="projectId"`); the dashboard view
+  shows the Projects and Firewalls sections only; the dashboard hero subtitle
+  now states that deleted objects live in the trash can of their project.
+- `static/js/app.js`: `trashBin()` loads `items` only when a project id is
+  passed; the component's header comment now describes the two separate trashes.
+- `app/views.py`: `trash_page` docstring updated.
+
+- Files touched: `app/api/routes.py`, `app/views.py`, `templates/trash.html`,
+  `static/js/app.js`, `PROJECT.md`, `CHANGELOG.md`.
+- Verified: `QA/qa_trash_split.py` (stage A: 18 API assertions — temporary QA
+  firewall round trip through the dashboard trash, QA object soft-delete,
+  dashboard `GET /api/trash` → `items` empty, `GET /api/trash?project_id=1` →
+  that project's deleted objects only with no project/firewall entries;
+  stage B: 3 assertions + full cleanup of the QA rows) + headless browser —
+  `/trash` shows only the Projects and Firewalls sections (Objects section
+  hidden) with a deleted project + firewall row and Restore buttons;
+  `/trash?project_id=1` shows only the Objects section with the project's
+  deleted objects, and clicking **Restore** on the QA object row removed it
+  from the list (the user-deleted demo objects were left untouched). Demo
+  database state restored afterwards.
+
+**Object list page: project trash-can icon in the header, no Trash in the nav bar (project-scoped views):**
+
+*Feature — the project trash can moves onto the object list page:*
+- `templates/objects.html`: when the list is scoped by a project
+  (`?project_id=`), the page header now shows the project **trash-can icon
+  button** (the same markup as the project page hero, → `/trash?project_id=<id>`),
+  and the nav bar drops **Trash** — it uses the same conditional partial as the
+  project pages (`_project_nav.html`: Dashboard / Objects). Non-project-scoped
+  views keep the default nav bar (Dashboard / Trash) and no trash-can icon.
+
+- Files touched: `templates/objects.html`, `PROJECT.md`, `CHANGELOG.md`.
+- Verified: headless browser — `/objects?project_id=1&firewall_id=1&object_type=address`
+  shows a nav bar with only Dashboard / Objects (no Trash) and the trash-can icon
+  in the header; clicking it opens the project trash can (`/trash?project_id=1`,
+  Objects section only); `/objects` (unscoped) keeps the Dashboard / Trash nav bar
+  and no trash-can icon.
+
+---
+
+## 2026-11-26
+
+**Trash: deleted projects and firewalls are restorable (per-type sections), project trash can, greyed-out deleted objects with Restore:**
+
+*Feature — projects/firewalls go to the Trash instead of being hard-deleted:*
+- `app/models.py`: `Project` and `Firewall` gain `is_deleted` + `deleted_at` and a
+  `trash_record` relation; `soft_delete()` / `restore()` mirror the existing
+  `ConfigObject` pattern. Deleting a project cascades into the trash: its
+  attached firewalls (as `firewall` trash entries) and, for each firewall, every
+  object individually (as `object` trash entries with the reason
+  "Firewall '<name>' deleted"). `restore()` brings the descendants back with it.
+- `app/models.py`: the `Trash` model is generalized — new `item_type` column
+  ("object" | "project" | "firewall"), nullable `config_object_id`, new
+  `project_id` / `firewall_id` columns + relationships.
+- `app/factory.py`: two one-off migrations for existing databases —
+  `is_deleted`/`deleted_at` added to `projects`/`firewalls` (ALTER TABLE) and
+  the `trash` table rebuilt with the new columns (existing rows backfilled as
+  `item_type = 'object'`).
+- `app/views.py`: `POST /projects/<id>/delete` and `POST /firewalls/<id>/delete`
+  now soft-delete (flash: "moved to the trash — restore it from the Trash
+  page"); a project in the trash answers 404 on its page; trashed projects /
+  firewalls are excluded from the dashboard lists, the project stats, the
+  attachable list, the import wizard and the object-list scope (a trashed
+  scope is treated as "no scope"); attach/create/patch flows reject targets
+  that are in the trash with a friendly message.
+- `app/api/routes.py`: `GET /api/projects` + `GET /api/firewalls` filter out
+  deleted entries; `POST /api/projects` (attach) and `POST /api/firewalls` /
+  `PATCH /api/firewalls/<id>` reject trash-reserved names; the project payload
+  lists only active firewalls.
+
+*Feature — `GET /api/trash` now returns the list per type + project scoping:*
+- Response shape: `{projects: [...], firewalls: [...], items: [...objects]}` —
+  projects carry name/description/firewall_count/object_count, firewalls carry
+  name/vendor/model/project/object_count, objects carry name/type/firewall/
+  project + the full serialized object (the previous response only had an
+  `object` sub-object, which the old template never read — its Name/Type/
+  Firewall columns rendered blank).
+- `?project_id=N` scopes the response to that project's deleted objects (the
+  project trash can); `POST /api/trash/<id>/restore` is generalized to
+  object/project/firewall entries (cascade included) with a friendly error
+  when an active entry already holds the name.
+- `POST /api/objects/<id>/restore` (new): restores a single object from the
+  trash — the Restore button of the object list page.
+
+*UI — `templates/trash.html` rewritten with the section system:*
+- Three labeled sections — **Projects**, **Firewalls**, **Objects** — each with
+  its own table, empty state and Restore buttons; the header/subtitle adapts
+  to the scope. With `?project_id=` only the Objects section is shown ("Trash
+  — <project>", back link to the project page).
+- `static/js/app.js` `trashBin(projectId)`: loads the three groups (scoped
+  URL when a project is passed), one `restore(kind, trashId, label)` with a
+  confirm and a busy state; the old dead "Delete" button (it called a
+  `deleteForever` method that never existed) is gone — restore only.
+- `templates/project.html`: the hero gains a **trash-can icon button**
+  (next to "Edit Project") linking to `/trash?project_id=<id>` — the trash
+  can for the objects tied to the project.
+
+*UI — object list: deleted objects are greyed out and restorable in place:*
+- `static/js/app.js` `objectTable()`: the list now always requests
+  `include_deleted=true`; deleted rows render greyed out (`table-row-deleted`,
+  new CSS in `base.html` — opacity 0.55) with a red **deleted** badge;
+  their Modify/Delete buttons are replaced by a single **Restore** button
+  (`restoreRow()` → `POST /api/objects/<id>/restore`, immediate — no staging);
+  deleted rows cannot be opened for editing ("Restore it first") nor tagged
+  for the export (checkbox disabled, excluded from `selectableRows`).
+- `templates/objects.html`: row class binding, badges, button swap, disabled
+  checkbox for deleted rows, "in export" badge hidden on deleted rows.
+
+*Cleanup — Manage firewalls (project page):*
+- The per-row **Edit** link is removed from the "Manage firewalls" table
+  (rows keep Import / Objects / Remove); the `?edit=<id>` deep link on
+  `/firewalls` stays as-is for the firewall dashboard cards.
+- Delete confirmations (dashboard + firewalls page) now say "Move … to the
+  trash?" and the project/firewall name stays reserved while the entry is in
+  the trash (no permanent delete yet) — create/rename attempts get a
+  trash-aware error instead of a generic constraint message.
+
+- Files touched: `app/models.py`, `app/factory.py`, `app/views.py`,
+  `app/api/routes.py`, `templates/project.html`, `templates/trash.html`,
+  `templates/objects.html`, `templates/base.html`, `static/js/app.js`,
+  `PROJECT.md`, `CHANGELOG.md`.
+- Verified: `QA/qa_trash_lifecycle.py` (43 API assertions: create → trash →
+  per-type listing → cascade restore → name reservation → object delete/
+  restore round trip, full cleanup) + headless browser — trash page sections
+  (empty + with a deleted firewall, Restore click), project hero trash can,
+  Manage firewalls without Edit link, project-scoped trash, and the object
+  list round trip (add → stage delete → Validate → greyed-out row with
+  deleted badge + Restore → click Restore → row active again). All QA test
+  rows were removed from the database afterwards.
+
+**Complete UI-UX redesign using UI/UX Pro Max skill:**
+- Redesigned all templates with a consistent Flat Design system: new purple
+  primary color (#7C3AED), orange CTA accent (#F97316), and surface tint (#FAF5FF).
+- Added Google Fonts: Fira Sans (body) and Fira Code (monospace) for a
+  technical, precise dashboard aesthetic.
+- Replaced Font Awesome with inline SVG icons for consistency and performance.
+- Introduced reusable CSS utility classes in `base.html`: `.btn`, `.badge`,
+  `.card`, `.input`, `.table-header`, `.flash-*`, `.modal-*`, `.stat-card`,
+  `.empty-state`, `.btn-link`, `.btn-ghost`, `.btn-danger`, `.btn-success`,
+  `.btn-secondary`, `.btn-accent`, `.btn-primary`.
+- Updated all 14 templates: `base.html`, `index.html`, `project.html`,
+  `firewalls.html`, `objects.html`, `export.html`, `import.html`,
+  `projects.html`, `project_edit.html`, `trash.html`, `_project_wizard.html`,
+  `_firewall_wizard.html`, `_firewall_edit.html`, `_project_nav.html`.
+- Removed unnecessary box shadows (flat design), standardized border radii,
+  and unified transition durations (150ms for hover, 300ms for progress).
+- Improved form layouts with consistent input styling, focus rings, and labels.
+- Created `DESIGN.md` documenting the complete design system (colors, typography,
+  components, spacing, accessibility, Tailwind config).
+- Files touched: all templates in `templates/`, new `DESIGN.md`.
+- Verified: all templates use the new utility classes consistently; design system
+  documentation is complete and accurate.
+
+---
+
+## 2026-11-25
+
+**Documentation — strict `QA/`-only rule for every created test file and generated log:**
+- `PROJECT.md` §3 (background dev server recipe): the launcher is now created as
+  `QA\_run_server.bat` and the redirect logs go to `QA\_server_log.txt` /
+  `QA\_server_err.txt` (updated `Start-Process` example with the absolute `QA/`
+  paths); the cleanup step deletes the temporary files from `QA/` and notes they
+  are disposable test-round artifacts.
+- `PROJECT.md` §8 rule 7 + §9 rule 1 reworded: **every created test file and
+  generated log (test scripts, run/redirect logs, launcher files, dumps,
+  screenshots, API probes) MUST strictly live in `QA/`** — never at the
+  repository root or inside `app/`, `templates/`, `static/` or `files/`;
+  the §9 file list now explicitly includes the background dev server's launcher
+  + redirect logs, and the typical-scripts table names `QA\_run_server.bat`.
+- `PROJECT.md` §2 layout tree: `QA/` documented as the strict location for
+  every test file and generated log.
+- Files touched: `PROJECT.md`, `CHANGELOG.md`.
+- Verified: `findstr` sweep — every `_run_server*` / `_server_*.txt` reference
+  in `PROJECT.md` now points to `QA/`; no root-level temp-file references left.
+
+---
+
+**Feature — project page: export section with the previous generated / pushed files; navbars slimmed:**
+- `templates/base.html`: **Firewalls link removed from the top bar** (Dashboard / Trash remain);
+  new `.entrance-delay-4` delay class for the fourth staggered section.
+- `templates/_project_nav.html`: **Export link removed** — the project page top bar is now
+  **Dashboard / Objects** only; the Dashboard link appears **in the top bar only** (the hero's
+  "← Back to Dashboard" was removed from `project.html`).
+- `templates/project.html`: a blue **pre-export hint above Statistics** — "You can modify,
+  adjust, select or remove objects on the object list pages before exporting the configuration
+  selectively"; the **Export Configuration button moved** from the Manage firewalls section head
+  to a **new LAST section "Export configuration"** (kicker "Delivery") which also **lists the
+  previous generated or pushed configuration files** of the project (File / Pushed badge,
+  destination, objects per type, size, UTC date) **with a Download button each** ("not on disk"
+  badge when the stored file is gone).
+- `app/models.py`: new **`ExportRecord`** model (`export_records` table — project_id /
+  firewall_id ON DELETE SET NULL, method file|push, destination name, filename, file_path,
+  object_count, per-type counts JSON, size, user, created_at).
+- `app/api/routes.py`: `_exports_dir()` + **`_record_export()`** — every generated
+  (`POST /api/export/file`, legacy `POST /api/export` download) or pushed
+  (`POST /api/export/push`, legacy push mode) configuration is persisted to
+  `instance/exports/<id>_<filename>` + an `export_records` row (best-effort, a failure never
+  breaks the export); the push stream captures `current_user()` before the request context is
+  gone (the stream runs in a fresh app context).
+- `app/views.py`: `project_detail` builds the export list (newest first, on-disk check, human
+  sizes) for the new section; new route **`GET /projects/<id>/exports/<rid>/download`** serves
+  the stored file as an attachment (flash + redirect when it is no longer on disk).
+- `.gitignore`: `instance/exports/` ignored (local artifacts, like the DB file).
+- Files touched: `app/models.py`, `app/views.py`, `app/api/routes.py`, `templates/base.html`,
+  `templates/_project_nav.html`, `templates/project.html`, `.gitignore`, `PROJECT.md`,
+  `CHANGELOG.md`.
+- Verified: headless browser — dashboard top bar = Dashboard/Trash; project top bar =
+  Dashboard/Objects; hero without the back link; hint above Statistics; "Export configuration"
+  is the last section with the file table; + `QA/qa_export_records.py` — file + push round trip,
+  all record download links + the temporary token link answer 200 with attachment disposition,
+  record counts match the requests (587 addresses pushed; 717 address+service file).
+
+---
+
+**Follow-up on the dashboard/project rework — more obvious section separation:**
+- `templates/base.html`: `.section` now renders as a surface slab —
+  `background: var(--color-surface-sunken)`, 1px border, `var(--radius-lg)`
+  corners, 2rem inner padding (1.25rem on mobile) — so every section reads as
+  its own block on the white page; white cards contrast crisply against the
+  slab. Section gap widened 3rem → 3.5rem (2.5rem on mobile).
+- `templates/project.html`: the "All firewalls" type-chip panel switched from
+  sunken to white (`--color-surface-raised`) so it stands out on the new slab
+  background.
+- Files touched: `templates/base.html`, `templates/project.html`,
+  `PROJECT.md`, `CHANGELOG.md`.
+- Verified: headless browser at 1440 — dashboard (3 slabs) and project page
+  (3 slabs) show clear separation between sections; cards, chips, table and
+  attach footer all contrast correctly against the slab.
+
+---
+
+**Follow-up on the dashboard/project rework — section numbering removed;
+project description moved under the project name:**
+- `templates/base.html`: dropped the `.section-index` chip style; `.section-head-main`
+  is now a plain text column (kicker + title + sub).
+- `templates/index.html`: the `01/02/03` index chips are gone from the Statistics /
+  Projects / Firewalls section heads (kickers, titles, subs unchanged).
+- `templates/project.html`: the Description section is removed — the description now
+  sits below the project name in the page hero (`No description` fallback); the
+  Edit Project button moved to the hero; index chips removed from the Statistics /
+  Firewalls / Manage firewalls heads.
+- Files touched: `templates/base.html`, `templates/index.html`,
+  `templates/project.html`, `PROJECT.md`, `CHANGELOG.md`.
+- Verified: headless browser — dashboard + project page render at 1440 (no chips;
+  description under the project name; Edit Project in the hero).
+
+---
+
+**Dashboard + project page rework — distinguishable sections and new
+proportions (taste-skill 2.5, anti-slop principles):**
+- `templates/base.html`: new section system — `.section` + ruled `.section-head`
+  (`.section-index` monospace chip, `.section-kicker` uppercase label,
+  `.section-title` 1.375rem 700, optional `.section-sub`,
+  `.section-head-actions`) and `.page-hero` / `.page-hero-title` (2.625rem,
+  -0.025em) / `.page-hero-sub` — a stronger type scale and a clear band per
+  section on every page. Global `section { padding: 4rem 1.5rem }` removed
+  (it double-inset the dashboard sections inside the already-padded container
+  and bloated the wizard modal steps) → `section { padding: 0 }`.
+  `.modal-content` now carries 1.75rem of internal padding (previously none —
+  modal content touched the modal edges). Stat cards enlarged (padding 1.5rem,
+  value 2.25rem with tabular-nums, new `.stat-icon` chip, new `.stat-value-sm`
+  monospace style for date values). Mobile (<768px): the header row wraps
+  (`.header-row`) and nav links shrink — removes the only page-level horizontal
+  overflow at 390px.
+- `templates/index.html` (dashboard): rebuilt as three labeled sections —
+  **01 Statistics** (icon stat cards), **02 Projects** (card grid),
+  **03 Firewalls** (card grid); the hero carries the two main actions
+  (New Project / New Firewall); section heads carry the "Full list →" links.
+  All Alpine bindings unchanged (`dashboard()`).
+- `templates/project.html`: rebuilt as four labeled sections —
+  **01 Description** (description card; Edit Project moved into the section
+  head), **02 Statistics** (icon stat cards; Last Import as monospace
+  `stat-value-sm`), **03 Firewalls** ("All firewalls" type-chip panel + one
+  card per firewall in an `auto-fill, minmax(min(430px, 100%), 1fr)` grid —
+  the `min()` guard prevents overflow below 430px; "Total: N →" links are
+  nowrap), **04 Manage firewalls** (renamed from "Attached Firewalls") —
+  firewall table + "Attach existing firewall" footer; the Export Configuration
+  button now sits in the section head instead of a lone row at the page bottom.
+- `templates/_project_nav.html`: project-page nav links moved onto the shared
+  `.nav-link` class (they used `primary-*` Tailwind classes that are not in
+  the Tailwind config — dead hover/active states).
+- No backend or `static/js/app.js` changes.
+- Files touched: `templates/base.html`, `templates/index.html`,
+  `templates/project.html`, `templates/_project_nav.html`, `PROJECT.md`,
+  `CHANGELOG.md`.
+- Verified: headless-browser pass — dashboard 1440; project page 1440 (all 4
+  sections, Export in the 04 head) + 390 width probe (zero page-level
+  overflow; the wide table scrolls inside its own `.table-container`);
+  wizard + edit modals padded correctly; export / firewalls / projects /
+  trash pages render unchanged. The demo DB was re-seeded mid-session
+  (FGT-30E / FGT-600E, 1199 objects) — the new layout adapted correctly.
+
+---
 
 **QA folder documented in `PROJECT.md` (all files created during the testing
 phase go to `QA/`):**

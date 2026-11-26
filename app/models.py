@@ -29,6 +29,11 @@ class Project(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), unique=True, nullable=False)
     description = db.Column(db.Text, nullable=True)
+    # Soft delete: deleted projects land in the Trash (restorable) instead
+    # of being removed from the database. The attached firewalls and their
+    # objects follow into the trash (see soft_delete / restore).
+    is_deleted = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    deleted_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = db.Column(
         db.DateTime(timezone=True),
@@ -42,15 +47,67 @@ class Project(db.Model):
         back_populates="project",
         cascade="all, delete-orphan",
     )
+    trash_record = db.relationship(
+        "Trash",
+        uselist=False,
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+
+    @property
+    def active_firewalls(self):
+        """Attached firewalls that are not in the trash."""
+        return [fw for fw in self.firewalls if not fw.is_deleted]
 
     def to_dict(self):
         return {
             "id": self.id,
             "name": self.name,
             "description": self.description,
+            "is_deleted": bool(self.is_deleted),
+            "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+    def soft_delete(self, user="system", reason=None):
+        """Move the project to the trash (its firewalls + objects follow)."""
+        now = utcnow()
+        self.is_deleted = True
+        self.deleted_at = now
+
+        if self.trash_record is None:
+            db.session.add(
+                Trash(
+                    item_type="project",
+                    project_id=self.id,
+                    deleted_by=user,
+                    deleted_at=now,
+                    reason=reason,
+                )
+            )
+        else:
+            trash = self.trash_record
+            trash.restored_at = None
+            trash.deleted_by = user
+            trash.deleted_at = now
+            trash.reason = reason
+
+        for firewall in self.firewalls:
+            if not firewall.is_deleted:
+                firewall.soft_delete(user=user, reason=f"Project '{self.name}' deleted")
+
+    def restore(self, user="system"):
+        """Restore the project from the trash (its firewalls + objects follow)."""
+        self.is_deleted = False
+        self.deleted_at = None
+
+        if self.trash_record is not None:
+            self.trash_record.restored_at = utcnow()
+
+        for firewall in self.firewalls:
+            if firewall.is_deleted:
+                firewall.restore(user=user)
 
 
 class Firewall(db.Model):
@@ -69,6 +126,11 @@ class Firewall(db.Model):
     vendor = db.Column(db.String(32), nullable=False, index=True)
     model = db.Column(db.String(120), nullable=True)
     management_ip = db.Column(db.String(45), nullable=True)
+    # Soft delete: deleted firewalls land in the Trash (restorable) instead
+    # of being removed from the database. Their objects follow into the
+    # trash individually (see soft_delete / restore).
+    is_deleted = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    deleted_at = db.Column(db.DateTime(timezone=True), nullable=True)
     # "password" = login/password, "token" = API token.
     auth_mode = db.Column(db.String(16), nullable=False, default="password")
     api_username = db.Column(db.String(120), nullable=True)
@@ -91,6 +153,12 @@ class Firewall(db.Model):
         back_populates="firewall",
         cascade="all, delete-orphan",
     )
+    trash_record = db.relationship(
+        "Trash",
+        uselist=False,
+        back_populates="firewall",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         db.UniqueConstraint("project_id", "name", name="uq_firewalls_project_name"),
@@ -106,10 +174,53 @@ class Firewall(db.Model):
             "management_ip": self.management_ip,
             "auth_mode": self.auth_mode or "password",
             "description": self.description,
+            "is_deleted": bool(self.is_deleted),
+            "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
             "last_sync_at": self.last_sync_at.isoformat() if self.last_sync_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+    def soft_delete(self, user="system", reason=None):
+        """Move the firewall to the trash (its objects follow individually)."""
+        now = utcnow()
+        self.is_deleted = True
+        self.deleted_at = now
+
+        if self.trash_record is None:
+            db.session.add(
+                Trash(
+                    item_type="firewall",
+                    firewall_id=self.id,
+                    deleted_by=user,
+                    deleted_at=now,
+                    reason=reason,
+                )
+            )
+        else:
+            trash = self.trash_record
+            trash.restored_at = None
+            trash.deleted_by = user
+            trash.deleted_at = now
+            trash.reason = reason
+
+        # Every object goes to the trash individually: it shows up in the
+        # trash's object section and can be restored on its own.
+        for obj in self.config_objects:
+            if not obj.is_deleted:
+                obj.soft_delete(user=user, reason=f"Firewall '{self.name}' deleted")
+
+    def restore(self, user="system"):
+        """Restore the firewall from the trash (its objects follow)."""
+        self.is_deleted = False
+        self.deleted_at = None
+
+        if self.trash_record is not None:
+            self.trash_record.restored_at = utcnow()
+
+        for obj in self.config_objects:
+            if obj.is_deleted:
+                obj.restore(user=user)
 
     @property
     def has_config(self):
@@ -290,14 +401,36 @@ class ModificationHistory(db.Model):
 
 
 class Trash(db.Model):
+    """A trash entry for a soft-deleted entity.
+
+    ``item_type`` marks the kind of deleted entity ("object", "project",
+    "firewall"); exactly one of ``config_object_id`` / ``project_id`` /
+    ``firewall_id`` is set, matching the item type. Restored entries keep
+    ``restored_at`` set and disappear from the trash lists.
+    """
+
     __tablename__ = "trash"
 
     id = db.Column(db.Integer, primary_key=True)
+    # "object" | "project" | "firewall"
+    item_type = db.Column(db.String(16), nullable=False, default="object")
     config_object_id = db.Column(
         db.Integer,
         db.ForeignKey("config_objects.id", ondelete="CASCADE"),
         unique=True,
-        nullable=False,
+        nullable=True,
+    )
+    project_id = db.Column(
+        db.Integer,
+        db.ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    firewall_id = db.Column(
+        db.Integer,
+        db.ForeignKey("firewalls.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     deleted_by = db.Column(db.String(120), nullable=True)
     deleted_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
@@ -305,6 +438,66 @@ class Trash(db.Model):
     restored_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     config_object = db.relationship("ConfigObject", back_populates="trash_record")
+    project = db.relationship("Project", back_populates="trash_record")
+    firewall = db.relationship("Firewall", back_populates="trash_record")
+
+
+class ExportRecord(db.Model):
+    """A configuration file generated (``file``) or pushed (``push``).
+
+    The configuration text is kept on disk (``instance/exports/``) so the
+    project page can list the previous generated or pushed files and offer
+    them for download.
+    """
+
+    __tablename__ = "export_records"
+
+    id = db.Column(db.Integer, primary_key=True)
+    # SET NULL: the record stays when the project or the destination
+    # firewall is deleted (it is history, not a live reference).
+    project_id = db.Column(
+        db.Integer,
+        db.ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    firewall_id = db.Column(
+        db.Integer,
+        db.ForeignKey("firewalls.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # "file" = generated download, "push" = pushed to the firewall (the
+    # pushed text is kept on disk as well, so it stays downloadable).
+    method = db.Column(db.String(16), nullable=False)
+    destination_name = db.Column(db.String(120), nullable=True)
+    filename = db.Column(db.String(255), nullable=False)
+    # Stored file name inside instance/exports/ (record id + filename).
+    file_path = db.Column(db.String(512), nullable=False, default="")
+    object_count = db.Column(db.Integer, nullable=False, default=0)
+    counts = db.Column(db.JSON, nullable=False, default=lambda: {})
+    size_bytes = db.Column(db.Integer, nullable=False, default=0)
+    user = db.Column(db.String(120), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+
+    project = db.relationship("Project")
+    firewall = db.relationship("Firewall")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "firewall_id": self.firewall_id,
+            "method": self.method,
+            "destination_name": self.destination_name,
+            "filename": self.filename,
+            "file_path": self.file_path,
+            "object_count": self.object_count,
+            "counts": self.counts or {},
+            "size_bytes": self.size_bytes,
+            "user": self.user,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 def log_change(config_object, field, old_value, new_value, action, user):

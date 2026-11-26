@@ -1,16 +1,29 @@
 import json
+import os
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    render_template,
+    request,
+    redirect,
+    url_for,
+    flash,
+    send_file,
+)
 from sqlalchemy.exc import IntegrityError
 
 from .models import (
     ALLOWED_OBJECT_TYPES,
     ConfigObject,
+    ExportRecord,
     Firewall,
     ModificationHistory,
     Project,
     db,
 )
+from .api.routes import current_user
 from .vendors.factory import registered_vendors
 from . import forms  # Import forms module
 
@@ -19,7 +32,26 @@ views_bp = Blueprint("views", __name__)
 
 
 def _all_firewalls():
-    return Firewall.query.order_by(Firewall.name).all()
+    """All active (non-deleted) firewalls, ordered by name."""
+    return (
+        Firewall.query.filter(Firewall.is_deleted == False)  # noqa: E712
+        .order_by(Firewall.name)
+        .all()
+    )
+
+
+def _project_name_conflict(name):
+    """Friendly error message for a project name collision on create/rename.
+
+    A project in the trash keeps its (unique) name reserved until it is
+    restored — there is no permanent-delete in the UI yet.
+    """
+    shadow = Project.query.filter_by(name=name, is_deleted=True).first()
+
+    if shadow is not None:
+        return f"Project '{name}' is in the trash — restore it from the Trash page first."
+
+    return "A project with this name already exists."
 
 
 def _project_form(formdata=None):
@@ -92,16 +124,32 @@ GENERIC_COLUMNS = [
 ]
 
 
+def _human_size(num_bytes):
+    """Human-readable size for the project page export list."""
+    size = float(num_bytes or 0)
+
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+
+
 def _project_stats(project):
     """Per-firewall, per-type object statistics for a project.
 
     Returns a dict with:
-      firewalls: [{id, name, total, types: {type: n}, modified: {type: n}, last_sync_at}]
+      firewalls: [{id, name, total, types: {type: n}, modified: {type: n},
+                  deleted: {type: n}, last_sync_at}]
       types: canonical list of the types present in the project (or all 9 when empty)
       totals: {objects, modified, types}
       last_import: iso timestamp of the most recent firewall import (or None)
     """
-    firewalls = Firewall.query.filter_by(project_id=project.id).order_by(Firewall.name).all()
+    firewalls = (
+        Firewall.query.filter_by(project_id=project.id)
+        .filter(Firewall.is_deleted == False)  # noqa: E712
+        .order_by(Firewall.name)
+        .all()
+    )
     firewall_ids = [fw.id for fw in firewalls]
 
     type_counts = {}
@@ -167,6 +215,28 @@ def _project_stats(project):
         for fw_id, object_type, count in rows:
             included_counts[(fw_id, object_type)] = count
 
+    # Deleted (soft-deleted) objects per firewall / per type — the same
+    # pattern as the modified counts, for the "Manage firewalls" table.
+    deleted_counts = {}
+
+    if firewall_ids:
+        rows = (
+            db.session.query(
+                ConfigObject.firewall_id,
+                ConfigObject.object_type,
+                db.func.count(ConfigObject.id),
+            )
+            .filter(
+                ConfigObject.firewall_id.in_(firewall_ids),
+                ConfigObject.is_deleted == True,  # noqa: E712
+            )
+            .group_by(ConfigObject.firewall_id, ConfigObject.object_type)
+            .all()
+        )
+
+        for fw_id, object_type, count in rows:
+            deleted_counts[(fw_id, object_type)] = count
+
     present_types = {t for (_fw, t) in type_counts}
 
     fw_stats = []
@@ -175,6 +245,7 @@ def _project_stats(project):
         types = {t: type_counts.get((fw.id, t), 0) for t in ALLOWED_OBJECT_TYPES}
         modified = {t: modified_counts.get((fw.id, t), 0) for t in ALLOWED_OBJECT_TYPES}
         included = {t: included_counts.get((fw.id, t), 0) for t in ALLOWED_OBJECT_TYPES}
+        deleted = {t: deleted_counts.get((fw.id, t), 0) for t in ALLOWED_OBJECT_TYPES}
         fw_stats.append(
             {
                 "id": fw.id,
@@ -186,9 +257,11 @@ def _project_stats(project):
                 "total": sum(types.values()),
                 "modified_total": sum(modified.values()),
                 "included_total": sum(included.values()),
+                "deleted_total": sum(deleted.values()),
                 "types": types,
                 "modified": modified,
                 "included": included,
+                "deleted": deleted,
                 "last_sync_at": fw.last_sync_at.isoformat() if fw.last_sync_at else None,
             }
         )
@@ -290,22 +363,67 @@ def dashboard():
 def project_detail(project_id):
     project = Project.query.get_or_404(project_id)
 
+    # A project in the trash is not openable — restore it from the Trash page.
+    if project.is_deleted:
+        abort(404)
+
     stats = _project_stats(project)
 
     # Any firewall not attached to this project can be attached — also
     # without an imported configuration (it can be imported later).
+    # Firewalls in the trash are not attachable (restore them first).
     attachable_firewalls = []
 
     for fw in Firewall.query.order_by(Firewall.name).all():
-        if fw.project_id == project.id:
+        if fw.project_id == project.id or fw.is_deleted:
             continue
         attachable_firewalls.append((fw, fw.objects_count))
+
+    # Previous generated / pushed configuration files of the project
+    # (newest first) — listed in the "Export configuration" section.
+    exports = []
+
+    for record in ExportRecord.query.filter_by(project_id=project.id).order_by(
+        ExportRecord.created_at.desc(), ExportRecord.id.desc()
+    ).all():
+        counts = record.counts or {}
+        exports.append(
+            {
+                "id": record.id,
+                "filename": record.filename,
+                "method": record.method,
+                "destination": record.destination_name or "—",
+                "object_count": record.object_count,
+                "types_summary": ", ".join(
+                    f"{t} {n}" for t, n in sorted(counts.items())
+                ),
+                "size_human": _human_size(record.size_bytes),
+                "created": (
+                    record.created_at.strftime("%Y-%m-%d %H:%M")
+                    if record.created_at
+                    else "—"
+                ),
+                "available": os.path.isfile(
+                    os.path.join(
+                        current_app.instance_path,
+                        "exports",
+                        os.path.basename(record.file_path),
+                    )
+                ),
+                "download_url": url_for(
+                    "views.download_project_export",
+                    project_id=project.id,
+                    export_id=record.id,
+                ),
+            }
+        )
 
     return render_template(
         "project.html",
         project=project,
         stats=stats,
         attachable_firewalls=attachable_firewalls,
+        exports=exports,
         object_types=ALLOWED_OBJECT_TYPES,
     )
 
@@ -333,6 +451,8 @@ def attach_project_firewall(project_id):
 
     if firewall is None:
         flash("The selected firewall no longer exists.", "error")
+    elif firewall.is_deleted:
+        flash(f"Firewall '{firewall.name}' is in the trash — restore it from the Trash page first.", "error")
     elif firewall.project_id == project.id:
         flash(f"Firewall '{firewall.name}' is already attached to this project.", "error")
     else:
@@ -363,15 +483,46 @@ def remove_project_firewall(project_id, firewall_id):
     return redirect(url_for("views.project_detail", project_id=project.id))
 
 
+@views_bp.route("/projects/<int:project_id>/exports/<int:export_id>/download")
+def download_project_export(project_id, export_id):
+    """Serve a previously generated or pushed configuration file of the project."""
+    project = Project.query.get_or_404(project_id)
+    record = ExportRecord.query.filter_by(id=export_id, project_id=project.id).first_or_404()
+    path = os.path.join(
+        current_app.instance_path, "exports", os.path.basename(record.file_path)
+    )
+
+    if not os.path.isfile(path):
+        flash("The file is no longer on disk — generate it again.", "error")
+        return redirect(url_for("views.project_detail", project_id=project.id))
+
+    mimetype = (
+        "application/xml" if record.filename.lower().endswith(".xml") else "text/plain"
+    )
+    return send_file(
+        path,
+        mimetype=mimetype,
+        as_attachment=True,
+        download_name=record.filename,
+    )
+
+
 @views_bp.route("/firewalls/<int:firewall_id>/delete", methods=["POST"])
 def delete_firewall(firewall_id):
-    """Delete a firewall and all of its objects (the UI asks for confirmation first)."""
+    """Move a firewall to the trash (its objects follow — restorable from the Trash page).
+
+    The UI asks for confirmation first.
+    """
     firewall = Firewall.query.get_or_404(firewall_id)
 
+    if firewall.is_deleted:
+        flash("That firewall is already in the trash.", "error")
+        return redirect(url_for("views.firewalls_page"))
+
     name = firewall.name
-    db.session.delete(firewall)
+    firewall.soft_delete(user=current_user(), reason="Deleted from UI")
     db.session.commit()
-    flash(f"Firewall '{name}' and all of its objects were deleted.", "success")
+    flash(f"Firewall '{name}' was moved to the trash — restore it from the Trash page.", "success")
 
     return redirect(url_for("views.firewalls_page"))
 
@@ -393,7 +544,7 @@ def edit_project(project_id):
                 return redirect(url_for("views.project_detail", project_id=project.id))
             except IntegrityError:
                 db.session.rollback()
-                flash("A project with this name already exists.", "error")
+                flash(_project_name_conflict(form.name.data), "error")
                 return redirect(url_for("views.project_detail", project_id=project.id))
 
         return render_template("project_edit.html", project=project, form=form)
@@ -406,13 +557,21 @@ def edit_project(project_id):
 
 @views_bp.route("/projects/<int:project_id>/delete", methods=["POST"])
 def delete_project(project_id):
-    project = Project.query.get_or_404(project_id)
-    name = project.name
+    """Move a project to the trash (its firewalls + objects follow — restorable).
 
-    db.session.delete(project)
+    The UI asks for confirmation first.
+    """
+    project = Project.query.get_or_404(project_id)
+
+    if project.is_deleted:
+        flash("That project is already in the trash.", "error")
+        return redirect(url_for("views.dashboard"))
+
+    name = project.name
+    project.soft_delete(user=current_user(), reason="Deleted from UI")
     db.session.commit()
 
-    flash(f"Project '{name}' and all of its firewalls and objects were deleted.", "success")
+    flash(f"Project '{name}' was moved to the trash — restore it from the Trash page.", "success")
     return redirect(url_for("views.dashboard"))
 
 
@@ -447,10 +606,32 @@ def export_page(project_id):
 
 @views_bp.route("/import")
 def import_page():
-    firewalls = Firewall.query.order_by(Firewall.name).all()
+    """Standalone import wizard (firewall → source/types → review).
+
+    The wizard is client-side (the Alpine ``importWizard()`` component in
+    app.js) and POSTs to ``/api/import`` — this page is GET-only and only
+    renders the wizard.
+    """
+    firewalls = _all_firewalls()
+
+    # JSON-safe firewall list for the Alpine wizard (embedded in a
+    # single-quoted x-data attribute; '<' escaped like export_page does).
+    firewalls_json = json.dumps(
+        [
+            {
+                "id": fw.id,
+                "name": fw.name,
+                "vendor": fw.vendor,
+                "model": fw.model,
+            }
+            for fw in firewalls
+        ]
+    ).replace("<", "\\u003c")
+
     return render_template(
         "import.html",
         firewalls=firewalls,
+        firewalls_json=firewalls_json,
         object_types=ALLOWED_OBJECT_TYPES,
     )
 
@@ -470,14 +651,20 @@ def objects_page():
     project = None
     firewall = None
 
+    # Entries in the trash are out of scope (restore them from the Trash page
+    # first) — treat them as if the scope was not given.
     if project_id.isdigit():
         project = Project.query.get(int(project_id))
+        if project is not None and project.is_deleted:
+            project = None
         project_id = str(project.id) if project else ""
     else:
         project_id = ""
 
     if firewall_id.isdigit():
         firewall = Firewall.query.get(int(firewall_id))
+        if firewall is not None and firewall.is_deleted:
+            firewall = None
         firewall_id = str(firewall.id) if firewall else ""
     else:
         firewall_id = ""
@@ -513,7 +700,22 @@ def objects_page():
 
 @views_bp.route("/trash")
 def trash_page():
-    return render_template("trash.html")
+    """Trash page — two separate trashes (restorable).
+
+    Without a scope (the dashboard trash) the page lists deleted projects and
+    firewalls only. With ``?project_id=`` (the trash can on the project page)
+    it is scoped to that project's deleted objects only.
+    """
+    project = None
+    project_id = ""
+
+    raw_id = (request.args.get("project_id") or "").strip()
+
+    if raw_id.isdigit():
+        project = Project.query.get(int(raw_id))
+        project_id = str(project.id) if project else ""
+
+    return render_template("trash.html", project=project, project_id=project_id)
 
 
 @views_bp.route("/projects", methods=["GET", "POST"])
@@ -531,7 +733,7 @@ def projects_page():
                 return redirect(url_for("views.projects_page"))
             except IntegrityError:
                 db.session.rollback()
-                flash("A project with this name already exists.", "error")
+                flash(_project_name_conflict(form.name.data), "error")
                 return redirect(url_for("views.projects_page"))
         else:
             for field, errors in form.errors.items():
@@ -539,7 +741,11 @@ def projects_page():
                     flash(f"{field}: {error}", "error")
             return redirect(url_for("views.projects_page"))
     
-    projects = Project.query.order_by(Project.name).all()
+    projects = (
+        Project.query.filter(Project.is_deleted == False)  # noqa: E712
+        .order_by(Project.name)
+        .all()
+    )
     return render_template("projects.html", projects=projects, form=ProjectForm())
 
 
@@ -561,6 +767,9 @@ def firewalls_page():
                 project = None
             if project is None:
                 flash("Select a valid project, or leave the firewall unassigned.", "error")
+                return redirect(url_for("views.firewalls_page"))
+            if project.is_deleted:
+                flash(f"Project '{project.name}' is in the trash — restore it first.", "error")
                 return redirect(url_for("views.firewalls_page"))
 
         if not name or not vendor:

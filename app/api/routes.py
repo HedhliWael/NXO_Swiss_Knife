@@ -25,6 +25,7 @@ from ..extensions import db
 from ..models import (
     ALLOWED_OBJECT_TYPES,
     ConfigObject,
+    ExportRecord,
     Firewall,
     ModificationHistory,
     Project,
@@ -61,7 +62,8 @@ def current_user():
 
 def _project_payload(project: Project):
     data = project.to_dict()
-    data["firewalls"] = [fw.to_dict() for fw in project.firewalls]
+    # Firewalls in the trash are not part of the project's live data.
+    data["firewalls"] = [fw.to_dict() for fw in project.firewalls if not fw.is_deleted]
     return data
 
 
@@ -136,6 +138,27 @@ def _get_selected_types():
 
     # Preserve order and remove duplicates.
     return list(dict.fromkeys(types))
+
+
+def _firewall_name_conflict(firewall: Firewall, name):
+    """Friendly error for a (project_id, name) collision on firewall write.
+
+    The colliding row is either an active firewall (same name already in use)
+    or a firewall that is in the trash (its name stays reserved until it is
+    restored — there is no permanent-delete in the UI yet).
+    """
+    shadow = (
+        Firewall.query.filter_by(project_id=firewall.project_id, name=name)
+        .first()
+    )
+
+    if shadow is not None and shadow.is_deleted:
+        where = f" in project '{shadow.project.name}'" if shadow.project else ""
+        raise ValidationError(
+            f"Firewall '{name}'{where} is in the trash — restore it from the Trash page first."
+        )
+
+    raise ValidationError(f"A firewall named '{name}' already exists in that project.")
 
 
 def _get_firewall_id():
@@ -564,6 +587,52 @@ def _export_file_name(firewall, fmt="xml"):
     return f"{firewall.name}_{timestamp}.txt", "text/plain"
 
 
+def _exports_dir():
+    """Directory holding the generated configuration files (instance/exports/)."""
+    path = os.path.join(current_app.instance_path, "exports")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _record_export(firewall, config_text, filename, method, object_count, counts, user):
+    """Persist a generated or pushed configuration and write an ExportRecord row.
+
+    The project page lists these records ("Export configuration" section) and
+    offers the files for download. Recording is best-effort: a failure is
+    logged and swallowed so the export itself never fails because of it.
+    """
+    try:
+        record = ExportRecord(
+            project_id=firewall.project_id,
+            firewall_id=firewall.id,
+            method=method,
+            destination_name=firewall.name,
+            filename=filename,
+            object_count=object_count,
+            counts=counts,
+            size_bytes=len(config_text.encode("utf-8")),
+            user=user,
+        )
+        db.session.add(record)
+        db.session.flush()
+
+        # Record id prefix keeps on-disk names unique across runs.
+        stored_name = f"{record.id:05d}_{filename}"
+        record.file_path = stored_name
+
+        with open(
+            os.path.join(_exports_dir(), stored_name), "w", encoding="utf-8", newline=""
+        ) as handle:
+            handle.write(config_text)
+
+        db.session.commit()
+        return record
+    except Exception:
+        logger.exception("Failed to persist the export record.")
+        db.session.rollback()
+        return None
+
+
 def _build_config(firewall, object_types, tagged_only_types=None, format=None):
     """Generate the vendor configuration text for the selected objects.
 
@@ -698,31 +767,44 @@ def projects():
 
         project = Project(name=name, description=description)
         db.session.add(project)
-        db.session.flush()
 
         attached = []
 
-        for raw in raw_ids:
-            try:
-                firewall_id = int(raw)
-            except (TypeError, ValueError) as exc:
-                db.session.rollback()
-                raise ValidationError("firewall_ids must contain integers.") from exc
-
-            firewall = Firewall.query.get(firewall_id)
-
-            if firewall is None:
-                db.session.rollback()
-                raise ValidationError(f"Firewall {firewall_id} does not exist.")
-
-            # Attaching moves the firewall (and its objects) to the new project.
-            firewall.set_project(project.id)
-            attached.append(firewall.name)
-
         try:
+            # Flush up front: the unique project name can already fail here
+            # (e.g. the name is reserved by a project that is in the trash).
+            db.session.flush()
+
+            for raw in raw_ids:
+                try:
+                    firewall_id = int(raw)
+                except (TypeError, ValueError) as exc:
+                    db.session.rollback()
+                    raise ValidationError("firewall_ids must contain integers.") from exc
+
+                firewall = Firewall.query.get(firewall_id)
+
+                if firewall is None or firewall.is_deleted:
+                    db.session.rollback()
+                    raise ValidationError(
+                        f"Firewall {firewall_id} does not exist (or is in the trash — restore it first)."
+                    )
+
+                # Attaching moves the firewall (and its objects) to the new project.
+                firewall.set_project(project.id)
+                attached.append(firewall.name)
+
             db.session.commit()
         except IntegrityError as exc:
             db.session.rollback()
+
+            shadow = Project.query.filter_by(name=name, is_deleted=True).first()
+
+            if shadow is not None:
+                raise ValidationError(
+                    f"Project '{name}' is in the trash — restore it from the Trash page first."
+                ) from exc
+
             raise ValidationError("Project already exists or violates a database constraint.") from exc
 
         payload = _project_payload(project)
@@ -730,7 +812,12 @@ def projects():
 
         return jsonify(status="ok", item=payload), 201
 
-    items = [_project_payload(p) for p in Project.query.order_by(Project.name).all()]
+    items = [
+        _project_payload(p)
+        for p in Project.query.filter(Project.is_deleted == False)  # noqa: E712
+        .order_by(Project.name)
+        .all()
+    ]
     return jsonify(items=items), 200
 
 
@@ -764,6 +851,9 @@ def firewalls():
         # Optional: the firewall can be created without a project (unassigned).
         project = Project.query.get_or_404(project_id) if project_id else None
 
+        if project is not None and project.is_deleted:
+            raise ValidationError("That project is in the trash — restore it first.")
+
         firewall = Firewall(
             project_id=project.id if project else None,
             name=name,
@@ -783,13 +873,19 @@ def firewalls():
             db.session.commit()
         except IntegrityError as exc:
             db.session.rollback()
-            raise ValidationError("Firewall already exists in this project or violates a constraint.") from exc
+            raise _firewall_name_conflict(firewall, name) from exc
 
         return jsonify(status="ok", item=firewall.to_dict()), 201
 
     items = []
 
-    for fw in Firewall.query.order_by(Firewall.name).all():
+    active_firewalls = (
+        Firewall.query.filter(Firewall.is_deleted == False)  # noqa: E712
+        .order_by(Firewall.name)
+        .all()
+    )
+
+    for fw in active_firewalls:
         data = fw.to_dict()
         # Dashboard extras: owning project (null when unassigned) and counts
         # of active objects (total + per type).
@@ -859,6 +955,10 @@ def firewall_detail(firewall_id):
                 project = Project.query.get_or_404(int(raw_project_id))
             except (TypeError, ValueError) as exc:
                 raise ValidationError("project_id must be an integer or null.") from exc
+
+            if project.is_deleted:
+                raise ValidationError("That project is in the trash — restore it first.")
+
             firewall.set_project(project.id)
 
     firewall.name = name
@@ -882,9 +982,7 @@ def firewall_detail(firewall_id):
         db.session.commit()
     except IntegrityError as exc:
         db.session.rollback()
-        raise ValidationError(
-            f"A firewall named '{name}' already exists in that project."
-        ) from exc
+        raise _firewall_name_conflict(firewall, name) from exc
 
     return jsonify(status="ok", item=firewall.to_dict()), 200
 
@@ -1145,6 +1243,31 @@ def list_objects():
     description = request.args.get("description")
     if description:
         query = query.filter(ConfigObject.description.ilike(f"%{description}%"))
+
+    # Status filter for the object list page's filter dropdown:
+    #   included  → active objects tagged "Include in the export"
+    #   modified  → objects with an "update" entry in the modification history
+    #   deleted   → soft-deleted objects (the list always includes them,
+    #                this narrows the scope to them)
+    status_filter = (request.args.get("filter") or "").strip().lower()
+
+    if status_filter == "included":
+        query = query.filter(
+            ConfigObject.export_included == True,  # noqa: E712
+            ConfigObject.is_deleted == False,  # noqa: E712
+        )
+    elif status_filter == "modified":
+        modified_exists = (
+            db.session.query(ModificationHistory.config_object_id)
+            .filter(
+                ModificationHistory.config_object_id == ConfigObject.id,
+                ModificationHistory.action == "update",
+            )
+            .exists()
+        )
+        query = query.filter(modified_exists)
+    elif status_filter == "deleted":
+        query = query.filter(ConfigObject.is_deleted == True)  # noqa: E712
 
     # JSON payload filters (normalized parser payload keys) — the object list
     # page offers any of these as the search field.
@@ -1524,6 +1647,36 @@ def delete_object(object_id):
     return jsonify(status="ok", message="Object moved to trash."), 200
 
 
+@api_bp.route("/objects/<int:object_id>/restore", methods=["POST"])
+def restore_object(object_id):
+    """Restore a single object from the trash (object list page)."""
+    obj = ConfigObject.query.get_or_404(object_id)
+
+    if not obj.is_deleted:
+        raise ValidationError("Object is not in the trash.")
+
+    user = current_user()
+
+    log_change(
+        config_object=obj,
+        field="status",
+        old_value="deleted",
+        new_value="active",
+        action="restore",
+        user=user,
+    )
+
+    obj.restore(user=user)
+
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        db.session.rollback()
+        raise ValidationError("Restore failed due to a database constraint violation.") from exc
+
+    return jsonify(status="ok", message=f"Object '{obj.name}' restored."), 200
+
+
 @api_bp.route("/objects/<int:object_id>/history", methods=["GET"])
 def object_history(object_id):
     obj = ConfigObject.query.get_or_404(object_id)
@@ -1556,60 +1709,185 @@ def object_history(object_id):
 
 @api_bp.route("/trash", methods=["GET"])
 def trash_list():
-    query = (
-        Trash.query.filter(Trash.restored_at.is_(None))
-        .options(db.joinedload(Trash.config_object))
-        .order_by(Trash.deleted_at.desc())
-    )
+    """Trash entries, grouped by entity type: projects, firewalls, objects.
 
+    Without a scope (the dashboard trash) only deleted projects and firewalls
+    are returned — deleted objects live in the trash can of their project.
+    With ``?project_id=N`` (the trash can on the project page) only that
+    project's deleted objects are returned.
+    """
+    scope_id = None
+
+    raw_scope = (request.args.get("project_id") or "").strip()
+
+    if raw_scope.isdigit():
+        scope_id = int(raw_scope)
+
+    projects = []
+    firewalls = []
     items = []
 
-    for trash in query.all():
-        obj = trash.config_object
-        if not obj:
-            continue
+    for trash in (
+        Trash.query.filter(Trash.restored_at.is_(None))
+        .order_by(Trash.deleted_at.desc(), Trash.id.desc())
+        .all()
+    ):
+        if trash.item_type == "project":
+            if scope_id is not None:
+                continue
 
-        items.append(
-            {
-                "trash_id": trash.id,
-                "deleted_by": trash.deleted_by,
-                "deleted_at": trash.deleted_at.isoformat() if trash.deleted_at else None,
-                "reason": trash.reason,
-                "object": _serialize_object(obj),
-            }
-        )
+            project = Project.query.get(trash.project_id) if trash.project_id else None
 
-    return jsonify(items=items), 200
+            if project is None or not project.is_deleted:
+                continue
+
+            projects.append(
+                {
+                    "trash_id": trash.id,
+                    "name": project.name,
+                    "description": project.description,
+                    "firewall_count": len(project.firewalls),
+                    "object_count": ConfigObject.query.filter_by(project_id=project.id).count(),
+                    "deleted_by": trash.deleted_by,
+                    "deleted_at": trash.deleted_at.isoformat() if trash.deleted_at else None,
+                    "reason": trash.reason,
+                }
+            )
+
+        elif trash.item_type == "firewall":
+            if scope_id is not None:
+                continue
+
+            firewall = Firewall.query.get(trash.firewall_id) if trash.firewall_id else None
+
+            if firewall is None or not firewall.is_deleted:
+                continue
+
+            firewalls.append(
+                {
+                    "trash_id": trash.id,
+                    "name": firewall.name,
+                    "vendor": firewall.vendor,
+                    "model": firewall.model,
+                    "management_ip": firewall.management_ip,
+                    "project_name": firewall.project.name if firewall.project else None,
+                    "object_count": len(firewall.config_objects),
+                    "deleted_by": trash.deleted_by,
+                    "deleted_at": trash.deleted_at.isoformat() if trash.deleted_at else None,
+                    "reason": trash.reason,
+                }
+            )
+
+        else:  # "object"
+            # Objects are listed only in the trash can of their project
+            # (?project_id=) — the dashboard trash shows projects + firewalls.
+            if scope_id is None:
+                continue
+
+            obj = ConfigObject.query.get(trash.config_object_id) if trash.config_object_id else None
+
+            if obj is None or not obj.is_deleted:
+                continue
+
+            if obj.project_id != scope_id:
+                continue
+
+            project = Project.query.get(obj.project_id) if obj.project_id else None
+
+            items.append(
+                {
+                    "trash_id": trash.id,
+                    "name": obj.name,
+                    "object_type": obj.object_type,
+                    "firewall_name": obj.firewall.name if obj.firewall else None,
+                    "project_id": obj.project_id,
+                    "project_name": project.name if project else None,
+                    "deleted_by": trash.deleted_by,
+                    "deleted_at": trash.deleted_at.isoformat() if trash.deleted_at else None,
+                    "reason": trash.reason,
+                    "object": _serialize_object(obj),
+                }
+            )
+
+    return (
+        jsonify(
+            projects=projects,
+            firewalls=firewalls,
+            items=items,
+            project_id=scope_id,
+        ),
+        200,
+    )
 
 
 @api_bp.route("/trash/<int:trash_id>/restore", methods=["POST"])
 def restore_trash(trash_id):
+    """Restore a trash entry (object, project or firewall).
+
+    Restoring a project/firewall brings its cascaded descendants back as
+    well (firewalls for a project, objects for a firewall).
+    """
     trash = Trash.query.get_or_404(trash_id)
 
     if trash.restored_at is not None:
-        raise ValidationError("Object has already been restored.")
+        raise ValidationError("This item has already been restored.")
 
-    obj = trash.config_object
     user = current_user()
 
-    log_change(
-        config_object=obj,
-        field="status",
-        old_value="deleted",
-        new_value="active",
-        action="restore",
-        user=user,
-    )
-
-    obj.restore(user=user)
-
     try:
+        if trash.item_type == "project":
+            project = Project.query.get(trash.project_id) if trash.project_id else None
+
+            if project is None:
+                raise ValidationError("The project no longer exists.")
+            if not project.is_deleted:
+                raise ValidationError("Project is already active.")
+
+            project.restore(user=user)
+            message = f"Project '{project.name}' restored."
+
+        elif trash.item_type == "firewall":
+            firewall = Firewall.query.get(trash.firewall_id) if trash.firewall_id else None
+
+            if firewall is None:
+                raise ValidationError("The firewall no longer exists.")
+            if not firewall.is_deleted:
+                raise ValidationError("Firewall is already active.")
+
+            firewall.restore(user=user)
+            message = f"Firewall '{firewall.name}' restored."
+
+        else:  # "object"
+            obj = ConfigObject.query.get(trash.config_object_id) if trash.config_object_id else None
+
+            if obj is None:
+                raise ValidationError("The object no longer exists.")
+            if not obj.is_deleted:
+                raise ValidationError("Object is already active.")
+
+            log_change(
+                config_object=obj,
+                field="status",
+                old_value="deleted",
+                new_value="active",
+                action="restore",
+                user=user,
+            )
+            obj.restore(user=user)
+            message = f"Object '{obj.name}' restored."
+
         db.session.commit()
+    except (ValidationError, HTTPException):
+        db.session.rollback()
+        raise
     except IntegrityError as exc:
         db.session.rollback()
-        raise ValidationError("Restore failed due to database constraint violation.") from exc
+        raise ValidationError(
+            "Restore failed: a conflicting entry already exists "
+            "(an active project or firewall with the same name)."
+        ) from exc
 
-    return jsonify(status="ok", message="Object restored."), 200
+    return jsonify(status="ok", message=message), 200
 
 
 # ---------------------------------------------------------------------------
@@ -1648,6 +1926,10 @@ def export_config():
     if mode == "download":
         filename, mimetype = _export_file_name(firewall, fmt)
 
+        _record_export(
+            firewall, config_text, filename, "file", len(objects), _counts, current_user()
+        )
+
         return Response(
             config_text,
             mimetype=mimetype,
@@ -1661,6 +1943,11 @@ def export_config():
             _mock_push_config(firewall, config_text)
         except VendorAPIError as error:
             return jsonify(error=error.message), error.status
+
+        push_filename, _mimetype = _export_file_name(firewall, fmt)
+        _record_export(
+            firewall, config_text, push_filename, "push", len(objects), _counts, current_user()
+        )
 
         firewall.last_sync_at = datetime.now(timezone.utc)
         db.session.commit()
@@ -1717,6 +2004,12 @@ def export_file():
         config_text,
         mimetype,
         datetime.now(timezone.utc),
+    )
+
+    # Keep a persistent copy: the project page lists the previous generated
+    # files and offers them for download.
+    _record_export(
+        firewall, config_text, filename, "file", len(objects), counts, current_user()
     )
 
     return (
@@ -1781,6 +2074,7 @@ def export_push_stream():
     # Streamed responses outlive the request context: capture what is needed
     # and run the DB work in a fresh application context.
     app_obj = current_app._get_current_object()
+    user = current_user()
 
     def generate():
         with app_obj.app_context():
@@ -1809,6 +2103,13 @@ def export_push_stream():
             except VendorAPIError as error:
                 yield json.dumps({"event": "error", "error": error.message}) + "\n"
                 return
+
+            # Keep a copy of the pushed configuration: the project page lists
+            # pushed files too, with a download.
+            push_filename, _mimetype = _export_file_name(firewall, fmt)
+            _record_export(
+                firewall, config_text, push_filename, "push", len(objects), counts, user
+            )
 
             yield _progress_line("confirm", 95, "Confirming...")
             time.sleep(0.3)
