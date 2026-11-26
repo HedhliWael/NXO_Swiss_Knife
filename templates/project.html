@@ -267,7 +267,7 @@
                             </td>
                             <td class="table-cell" style="text-align: right;">
                                 <div style="display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem;">
-                                    <a href="{{ url_for('views.import_page', firewall_id=fw.id) }}" class="link" style="font-size: 0.8125rem;">Import</a>
+                                    <a href="{{ url_for('views.import_page', firewall_id=fw.id, project_id=project.id) }}" class="link" style="font-size: 0.8125rem;">Import</a>
                                     <a href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id) }}" class="link" style="font-size: 0.8125rem;">Objects</a>
                                     <form
                                         method="POST"

@@ -13,3 +13,6 @@ instance/swissknife.db
 
 # Generated configuration files (export records; kept on disk per project)
 instance/exports/
+
+# Reference sample configurations (multi-MB; searched via the Vector DB only)
+files/

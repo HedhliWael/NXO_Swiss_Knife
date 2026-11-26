@@ -1620,15 +1620,17 @@ function exportWizard(stats, projectId) {
 // Import Wizard (standalone /import page)
 // ---------------------------------------------------------------------------
 
-function importWizard(firewalls) {
+function importWizard(firewalls, projectId) {
   const params = new URLSearchParams(window.location.search);
   const preselectedFirewall = params.get("firewall_id") || "";
+  const preselected = preselectedFirewall !== "";
 
   return {
     firewalls: Array.isArray(firewalls) ? firewalls : [],
+    projectId: projectId || null,
     // When a firewall is preselected (e.g. the per-row Import action on the
     // project page), skip straight to the source step.
-    step: preselectedFirewall ? 2 : 1,
+    step: preselected ? 2 : 1,
     firewall_id: preselectedFirewall,
     source_type: "file",
     url: "",
@@ -1638,6 +1640,14 @@ function importWizard(firewalls) {
     result: null,
     busy: false,
     fileName: "",
+    importHistory: [],
+    historyLoading: false,
+
+    init() {
+      if (this.firewall_id) {
+        this.loadHistory();
+      }
+    },
 
     firewall() {
       return (
@@ -1648,6 +1658,12 @@ function importWizard(firewalls) {
 
     setFileName(name) {
       this.fileName = name;
+    },
+
+    // The page the wizard was opened from: the project page when a project
+    // id was passed (per-row Import action), the dashboard otherwise.
+    goOrigin() {
+      location.href = this.projectId ? `/projects/${this.projectId}` : "/";
     },
 
     next() {
@@ -1663,10 +1679,47 @@ function importWizard(firewalls) {
     },
 
     back() {
+      // Step 2 is the first step when a firewall was preselected — Back
+      // leaves the wizard for the page it was opened from (project page or
+      // dashboard). Otherwise go back one wizard step.
+      if (this.step === 2 && preselected) {
+        this.goOrigin();
+        return;
+      }
+
       if (this.step > 1) {
         this.step -= 1;
         this.error = "";
       }
+    },
+
+    selectAllTypes() {
+      this.object_types = this.types.slice();
+    },
+
+    clearAllTypes() {
+      this.object_types = [];
+    },
+
+    async loadHistory() {
+      if (!this.firewall_id) {
+        return;
+      }
+
+      this.historyLoading = true;
+
+      try {
+        const data = await api(`/api/import/records?firewall_id=${this.firewall_id}`);
+        this.importHistory = data.items || [];
+      } catch (_) {
+        this.importHistory = [];
+      } finally {
+        this.historyLoading = false;
+      }
+    },
+
+    onFirewallChange() {
+      this.loadHistory();
     },
 
     toggleType(type) {
@@ -1732,6 +1785,7 @@ function importWizard(firewalls) {
         }
 
         this.result = data;
+        this.loadHistory();
       } catch (error) {
         this.error = error.message;
       } finally {
@@ -1755,9 +1809,40 @@ function trashBin(projectId) {
     projects: [],
     firewalls: [],
     items: [],
+    search: "",
+    // Trash ids selected with the row checkboxes — the permanent-delete
+    // buttons act on this selection (project trash can only).
+    selected: [],
     loading: true,
     error: "",
     busy: "",
+
+    // Object-trash search: filters the deleted-objects list by name, type,
+    // firewall, project or reason (client-side, no server call). A getter —
+    // the template reads it as a property; as a method, x-for iterated the
+    // function itself (non-iterable) and the table rendered no rows at all.
+    get filteredItems() {
+      const term = (this.search || "").trim().toLowerCase();
+
+      if (!term) {
+        return this.items;
+      }
+
+      return this.items.filter((item) => {
+        const haystack = [
+          item.name,
+          item.object_type,
+          item.firewall_name,
+          item.project_name,
+          item.reason
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+        return haystack.includes(term);
+      });
+    },
 
     async init() {
       try {
@@ -1786,6 +1871,104 @@ function trashBin(projectId) {
 
       try {
         await api(`/api/trash/${trashId}/restore`, { method: "POST" });
+        location.reload();
+      } catch (error) {
+        alert(error.message);
+        this.busy = "";
+      }
+    },
+
+    // ── Permanent delete (project trash can only) ──────────────────────
+    // Selecting rows with the checkboxes and confirming removes the
+    // objects from the database for good (history + trash rows included).
+
+    toggleSelect(trashId) {
+      const index = this.selected.indexOf(trashId);
+
+      if (index > -1) {
+        this.selected.splice(index, 1);
+      } else {
+        this.selected.push(trashId);
+      }
+    },
+
+    // Header checkbox: every row visible in the current search filter.
+    get allSelected() {
+      return (
+        this.filteredItems.length > 0 &&
+        this.filteredItems.every((item) => this.selected.includes(item.trash_id))
+      );
+    },
+
+    toggleAll() {
+      if (this.allSelected) {
+        const visible = new Set(this.filteredItems.map((item) => item.trash_id));
+        this.selected = this.selected.filter((id) => !visible.has(id));
+      } else {
+        for (const item of this.filteredItems) {
+          if (!this.selected.includes(item.trash_id)) {
+            this.selected.push(item.trash_id);
+          }
+        }
+      }
+    },
+
+    // Permanently delete the selected objects (with confirmation).
+    async deleteSelected() {
+      const count = this.selected.length;
+
+      if (!count) {
+        return;
+      }
+
+      if (
+        !confirm(
+          `Permanently delete ${count} object${count > 1 ? "s" : ""} from the trash? Their modification history goes with them. This cannot be undone.`
+        )
+      ) {
+        return;
+      }
+
+      this.busy = "object-perm";
+
+      try {
+        await api("/api/trash/permanent-delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trash_ids: this.selected })
+        });
+        location.reload();
+      } catch (error) {
+        alert(error.message);
+        this.busy = "";
+      }
+    },
+
+    // Permanently delete EVERY deleted object of the project (with
+    // confirmation — nothing else is touched).
+    async deleteAll() {
+      const count = this.items.length;
+
+      if (!count) {
+        return;
+      }
+
+      if (
+        !confirm(
+          `Permanently delete ALL ${count} objects in the trash of this project? Their modification history goes with them. This cannot be undone.`
+        )
+      ) {
+        return;
+      }
+
+      this.busy = "object-perm";
+
+      try {
+        await api("/api/trash/permanent-delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ all: true, project_id: this.projectId })
+        });
         location.reload();
       } catch (error) {
         alert(error.message);

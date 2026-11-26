@@ -177,9 +177,9 @@
                             <h2 class="section-title">Objects</h2>
                             <p class="section-sub">
                                 {% if project_id %}
-                                    Deleted objects of {{ project.name }} — restoring puts them back into the configuration.
+                                    Deleted objects of {{ project.name }} — restore them to put them back into the configuration, or delete them for good.
                                 {% else %}
-                                    Deleted configuration objects, restorable from here.
+                                    Deleted configuration objects — restore them, or delete them for good.
                                 {% endif %}
                                 <span x-text="`${items.length} in the trash`"></span>
                             </p>
@@ -187,15 +187,59 @@
                     </div>
 
                     <div class="card" style="padding: 0; margin-top: 1.25rem;">
+                        <div style="padding: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                <button
+                                    type="button"
+                                    @click="deleteSelected()"
+                                    :disabled="selected.length === 0 || busy !== ''"
+                                    class="btn btn-danger btn-sm"
+                                >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                    Delete selected (<span x-text="selected.length"></span>)
+                                </button>
+                                <button
+                                    type="button"
+                                    @click="deleteAll()"
+                                    :disabled="items.length === 0 || busy !== ''"
+                                    class="btn btn-danger btn-sm"
+                                >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                    Delete all (<span x-text="items.length"></span>)
+                                </button>
+                            </div>
+                            <input
+                                type="text"
+                                x-model="search"
+                                placeholder="Search name, type, firewall or reason..."
+                                class="input"
+                                style="max-width: 24rem; font-size: 0.8125rem;"
+                            >
+                        </div>
+
                         <div x-show="items.length === 0" class="empty-state">
                             <div class="empty-state-icon">🗑️</div>
                             <p class="empty-state-text">No objects in the trash.</p>
                         </div>
 
-                        <div x-show="items.length > 0" class="table-container">
+                        <div x-show="items.length > 0 && filteredItems.length === 0" class="empty-state">
+                            <div class="empty-state-icon">🔍</div>
+                            <p class="empty-state-text">No objects in the trash match “<span x-text="search.trim()"></span>”.</p>
+                        </div>
+
+                        <div x-show="filteredItems.length > 0" class="table-container">
                             <table>
                                 <thead class="table-header">
                                     <tr>
+                                        <th style="padding: 0.75rem 1rem; width: 2.5rem;">
+                                            <input
+                                                type="checkbox"
+                                                :checked="allSelected"
+                                                @change="toggleAll()"
+                                                aria-label="Select all visible objects"
+                                                style="cursor: pointer;"
+                                            >
+                                        </th>
                                         <th style="padding: 0.75rem 1rem;">Name</th>
                                         <th style="padding: 0.75rem 1rem;">Type</th>
                                         <th style="padding: 0.75rem 1rem;">Firewall</th>
@@ -206,8 +250,17 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <template x-for="item in items" :key="`o-${item.trash_id}`">
+                                    <template x-for="item in filteredItems" :key="`o-${item.trash_id}`">
                                         <tr class="table-row">
+                                            <td class="table-cell">
+                                                <input
+                                                    type="checkbox"
+                                                    :checked="selected.includes(item.trash_id)"
+                                                    @change="toggleSelect(item.trash_id)"
+                                                    :aria-label="`Select ${item.name} for permanent deletion`"
+                                                    style="cursor: pointer;"
+                                                >
+                                            </td>
                                             <td class="table-cell" style="font-weight: 500;" x-text="item.name"></td>
                                             <td class="table-cell" style="font-size: 0.8125rem;" x-text="item.object_type"></td>
                                             <td class="table-cell" style="font-size: 0.8125rem;" x-text="item.firewall_name || 'N/A'"></td>

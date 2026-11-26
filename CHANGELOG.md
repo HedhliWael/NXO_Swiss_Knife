@@ -10,6 +10,26 @@ Chronological log of all modifications to the project. **Newest first.**
 
 ---
 
+## 2026-11-26
+
+**Object trash (project trash can): permanent delete with row selection + delete-all, and the search filter actually shows the objects — and the import wizard's review step gets a "Back to project" button instead of "Import again":**
+
+*Bug fix — the project trash can's object table rendered no rows at all (`static/js/app.js`):*
+- `trashBin().filteredItems` was a **method**, but the template reads it as a property: `x-for="item in filteredItems"` iterated the function itself (non-iterable) and `filteredItems.length > 0` tested the function's argument count, so the table was always "visible" yet empty and the "no match" empty state could never show. It is now a **getter** — all deleted objects of the project are displayed, and the search box (name / type / firewall / project / reason, client-side) filters them with the "no match" empty state working as intended.
+
+*Feature — permanent delete of deleted objects from the project trash can:*:
+- `app/api/routes.py`: new `POST /api/trash/permanent-delete` — `{trash_ids: [...]}` removes exactly the selected trash entries, `{all: true, project_id: N}` removes every deleted object of that project. Only un-restored `item_type == "object"` entries are in scope; deleting the object cascades (delete-orphan) to its modification history and its trash row, so the name is freed and the entry can never be restored. Dangling entries (object row already gone) are dropped. Errors: no ids + no `all` → 400, `all` without `project_id` → 400, nothing matched → 400.
+- `static/js/app.js`: `trashBin()` gains `selected[]` (row checkboxes), `toggleSelect()` / `allSelected` (getter, header checkbox over the currently filtered rows) / `toggleAll()`, and `deleteSelected()` / `deleteAll()` — both behind a `confirm()` ("…This cannot be undone."), POSTing to the new endpoint and reloading on success; all action buttons stay disabled while a delete is in flight (`busy` flag, same pattern as restore).
+- `templates/trash.html`: the Objects section of the project trash can gets a selection checkbox column (header checkbox + per-row, aria-labelled) and a toolbar with **Delete selected (N)** + **Delete all (N)** (existing `.btn.btn-danger.btn-sm` style, trash-can SVG, disabled states: nothing selected / trash empty / busy) next to the search box; the section sub now mentions restoring *or* deleting for good.
+
+*Feature — import wizard review step: "Back to project" instead of "Import again" (`templates/import.html`):*
+- Step 3 (Review) after a successful import: the "Import again" button is gone (the wizard has no re-import — a new import is started from the page's back link / firewall row as before); instead a primary **Back to project** button appears (labelled **Back to dashboard** when the wizard was opened from the dashboard), calling the existing origin-aware `goOrigin()`. Before the import the step keeps Back (to step 2 / origin) + Import, unchanged.
+
+- Files touched: `app/api/routes.py`, `static/js/app.js`, `templates/trash.html`, `templates/import.html`, `PROJECT.md`, `CHANGELOG.md`.
+- Verified: dev server + API probes (`QA/qa_trash_probe.py`): created 3 objects on a demo firewall, soft-deleted them, `GET /api/trash?project_id=` listed all 3; `POST /api/trash/permanent-delete` with 2 of the 3 trash ids → 200 + `deleted: 2`, DB rows for the objects / their history / their trash entries gone, names freed (re-create with the same name succeeds); the 3rd object + its history survived; `all: true` then removed the last one; error paths 400 (empty body, `all` without `project_id`, ids already deleted). Headless browser: `/trash?project_id=1` — all objects displayed (previously zero rows), search "address" filters to the matching rows and a bogus term shows the "no match" empty state; header checkbox selects the filtered rows, "Delete selected (2)" confirms and the list shrinks to 1, "Delete all (1)" empties the trash (empty state shown); console clean (only the documented Tailwind CDN warning). `/import?project_id=1&firewall_id=N` with a small FortiGate config upload — after the import the result panel shows and the action row offers **Back to project** (no "Import again"); from `/import` without `project_id` the label is **Back to dashboard**. Demo database restored afterwards (test objects + trash entries removed, no committed changes to demo data).
+
+---
+
 ## 2026-12-16
 
 **Object list: status filter (included / modified / deleted), pulsing glow on the Validate button, Export button removed — and the project page's "Manage firewalls" table now counts deleted objects too:**
@@ -32,6 +52,36 @@ Chronological log of all modifications to the project. **Newest first.**
 
 - Files touched: `app/api/routes.py`, `app/views.py`, `templates/objects.html`, `templates/project.html`, `templates/base.html`, `static/js/app.js`, `PROJECT.md`, `CHANGELOG.md`.
 - Verified: `QA/qa_filter_probe.py` (11 assertions on `GET /api/objects` — per-type deleted/modified/included totals match the DB ground truth from `QA/qa_type_counts.py`; filter combined with `search`; unknown filter ignored; the deleted+modified object appears under "modified") + headless browser: `/objects?project_id=1&firewall_id=1&object_type=address` — the dropdown filters correctly (1 deleted row greyed out with badge + Restore, 1 modified, 0 included → "No objects found"); `/objects?project_id=3&firewall_id=5` — "Included" shows exactly the 7 tagged rows; staging a new object makes the Validate button gain `validate-attention` (CSS rule verified via CSSOM) and the "1 staged" badge appears, then both return to the clean state after Discard; no Export button on the object page; `/projects/1` — the Manage firewalls table shows FGT-600E with "(2 modified)" + "(2 deleted)"; console clean (only the documented Tailwind CDN warning). Demo database left untouched (staged change discarded, no committed changes).
+
+---
+
+## 2026-11-26
+
+**Import wizard: back navigation to the origin page, Select all / Clear shortcuts, import history + replace-the-previous-import semantics — and the object trash gains a search box:**
+
+*Feature — import wizard back navigation (project page / dashboard):*
+- `templates/import.html`: the header back link is now context-aware — "← Dashboard" by default, "← <project name>" when the page was opened with `?project_id=` (the per-row Import action on the project page, which now carries `project_id` — `templates/project.html`). Step 1 gains a **Back** button (`goOrigin()` → dashboard or project page); step 2's **Back** leaves the wizard for the origin page when the firewall was preselected via URL (else it goes back to step 1); step 3 keeps going back to step 2.
+- `app/views.py`: `import_page()` reads `?project_id=` and passes the project to the template (a trashed/unknown id falls back to the dashboard context); `static/js/app.js` `importWizard(firewalls, projectId)` gains `projectId`, `goOrigin()` and the origin-aware `back()`.
+
+*Feature — Select all / Clear on the import source & types step (same style as the export wizard):*
+- `templates/import.html`: the "Object types" block now carries the **Select all** / **Clear** link row with the exact markup of the export wizard's type step (`class="link"`, `padding: 0`, Clear in `var(--color-ink-muted)`), above the checkbox grid.
+- `static/js/app.js`: `importWizard()` gains `selectAllTypes()` / `clearAllTypes()`.
+
+*Feature — import history + a new import replaces the previous one:*
+- `app/models.py`: new `ImportRecord` model (one row per import run: firewall, source_type, source_name, object_count, counts, warnings, user, created_at — `firewall_id` SET NULL so history survives firewall deletion) + `ConfigObject.import_id` (the import run that created the object; NULL for manual objects) + `import_record` relationship.
+- `app/factory.py`: one-off migration `_ensure_config_objects_import_id()` (nullable `import_id` column on `config_objects`; the `import_records` table itself is created by `db.create_all()`).
+- `app/api/routes.py`: `_delete_previous_import()` deletes the firewall's latest import's objects (modification history + trash rows via ORM cascade) before a new import — manually created objects (no `import_id`) are untouched; `POST /api/import` and `POST /api/import/stream` create the `ImportRecord`, tag the imported objects with it and answer `replaced` + `import_record`; new `GET /api/import/records?firewall_id=N` (newest first, limit 20).
+- `templates/import.html` + `static/js/app.js`: the source & types step shows the **Import history** panel of the selected firewall (date, source file/URL, object count, per-type summary; loaded on init + firewall change + after a successful import) with the note "Importing replaces the previous import of this firewall: its objects are removed before the new configuration is applied"; the success panel confirms "Previous import removed: N objects."; the review note documents the replace semantics. The firewall wizard's import step (`/api/import/stream`) gets the same semantics automatically.
+
+*Feature — search in the object trash:*
+- `templates/trash.html`: the Objects section (project trash can) gains a search input (`class="input"`, right-aligned in the card head) filtering the deleted objects client-side by name / type / firewall / project / reason, with a "No objects in the trash match “…”" empty state.
+- `static/js/app.js`: `trashBin()` gains `search` + `filteredItems()`; the table iterates `filteredItems` instead of `items`.
+
+*Housekeeping — `files/` gitignored:*
+- `.gitignore`: new `files/` entry (reference sample configurations, multi-MB, searched via the Vector DB only). The four already-tracked samples stay tracked — `git rm --cached files/` is needed to untrack them; they remain on disk as reference samples.
+
+- Files touched: `.gitignore`, `app/models.py`, `app/factory.py`, `app/api/routes.py`, `app/views.py`, `templates/import.html`, `templates/trash.html`, `templates/project.html`, `static/js/app.js`, `PROJECT.md`, `CHANGELOG.md`.
+- Verified: `QA/qa_import_roundtrip.py` (import sample config into a QA firewall twice — the second import removes the first import's objects, keeps manually created ones, and the history lists both runs newest first; `GET /api/import/records` scoped + unscoped; manual objects survive a re-import) + headless browser: `/import` header "← Dashboard" with step-1 Back → dashboard; `/import?firewall_id=…&project_id=1` header "← <project>" with step-2 Back → project page; Select all / Clear toggle the type checkboxes (same link look as the export wizard); import history panel shows the previous run and refreshes after a new import with the "Previous import removed: N objects" line; `/trash?project_id=1` search box filters the deleted objects (match + no-match states). Demo database restored afterwards (QA rows removed).
 
 ---
 

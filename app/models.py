@@ -269,6 +269,17 @@ class ConfigObject(db.Model):
     raw_excerpt = db.Column(db.Text, nullable=True)
     fingerprint = db.Column(db.String(64), index=True)
 
+    # The import run that created this object (import history): a new import
+    # replaces the previous one — the previous import's objects are deleted
+    # before the new configuration is applied. NULL for manually created
+    # objects and for objects imported before the history existed.
+    import_id = db.Column(
+        db.Integer,
+        db.ForeignKey("import_records.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Tagged from the object list page ("Include in the export"): the export
     # wizard pre-selects tagged objects per object type.
     export_included = db.Column(db.Boolean, nullable=False, default=False, index=True)
@@ -287,6 +298,7 @@ class ConfigObject(db.Model):
     )
 
     firewall = db.relationship("Firewall", back_populates="config_objects")
+    import_record = db.relationship("ImportRecord")
     history = db.relationship(
         "ModificationHistory",
         back_populates="config_object",
@@ -321,6 +333,7 @@ class ConfigObject(db.Model):
             "payload": self.payload or {},
             "raw_excerpt": self.raw_excerpt,
             "fingerprint": self.fingerprint,
+            "import_id": self.import_id,
             "export_included": bool(self.export_included),
             "is_deleted": bool(self.is_deleted),
             "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
@@ -440,6 +453,51 @@ class Trash(db.Model):
     config_object = db.relationship("ConfigObject", back_populates="trash_record")
     project = db.relationship("Project", back_populates="trash_record")
     firewall = db.relationship("Firewall", back_populates="trash_record")
+
+
+class ImportRecord(db.Model):
+    """One import run against a firewall (the import history).
+
+    Every configuration import (file or URL) writes one record; the objects
+    created by that import carry ``ConfigObject.import_id`` back to it. A new
+    import replaces the previous one: the previous import's objects are removed
+    before the new configuration is applied. The record is kept when the
+    firewall is deleted (history, not a live reference).
+    """
+
+    __tablename__ = "import_records"
+
+    id = db.Column(db.Integer, primary_key=True)
+    # SET NULL: the record stays when the firewall is deleted.
+    firewall_id = db.Column(
+        db.Integer,
+        db.ForeignKey("firewalls.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # "file" = uploaded file, "url" = downloaded from a remote URL.
+    source_type = db.Column(db.String(16), nullable=False, default="file")
+    source_name = db.Column(db.String(512), nullable=True)
+    object_count = db.Column(db.Integer, nullable=False, default=0)
+    counts = db.Column(db.JSON, nullable=False, default=lambda: {})
+    warnings = db.Column(db.JSON, nullable=False, default=lambda: [])
+    user = db.Column(db.String(120), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+
+    firewall = db.relationship("Firewall")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "firewall_id": self.firewall_id,
+            "firewall_name": self.firewall.name if self.firewall else None,
+            "source_type": self.source_type,
+            "source_name": self.source_name,
+            "object_count": self.object_count,
+            "counts": self.counts or {},
+            "user": self.user,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 class ExportRecord(db.Model):

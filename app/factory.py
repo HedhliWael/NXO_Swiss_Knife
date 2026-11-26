@@ -392,6 +392,45 @@ def _ensure_config_objects_export_included():
         raw.close()
 
 
+def _ensure_config_objects_import_id():
+    """One-off migration for existing SQLite databases.
+
+    ``config_objects.import_id`` references the import run that created the
+    object (import history; a new import replaces the previous one). The
+    ``import_records`` table itself is created by ``db.create_all()`` before
+    this runs. SQLite ALTER TABLE can add a nullable column, so no rebuild is
+    needed.
+    """
+    raw = db.engine.raw_connection()
+    try:
+        cursor = raw.cursor()
+        cursor.execute("PRAGMA table_info(config_objects)")
+        columns = {name for _, name, _, _, _, _ in cursor.fetchall()}
+    finally:
+        raw.close()
+
+    if not columns or "import_id" in columns:
+        return
+
+    raw = db.engine.raw_connection()
+    try:
+        cursor = raw.cursor()
+        cursor.execute(
+            "ALTER TABLE config_objects"
+            " ADD COLUMN import_id INTEGER"
+            " REFERENCES import_records (id) ON DELETE SET NULL"
+        )
+        raw.commit()
+    except Exception:
+        try:
+            raw.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        raw.close()
+
+
 def create_app():
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
 
@@ -421,6 +460,7 @@ def create_app():
     # so create tables after that point.
     with app.app_context():
         db.create_all()
+        _ensure_config_objects_import_id()
         _ensure_firewalls_project_nullable()
         _ensure_firewall_auth_columns()
         _ensure_config_objects_project_nullable()

@@ -27,6 +27,7 @@ from ..models import (
     ConfigObject,
     ExportRecord,
     Firewall,
+    ImportRecord,
     ModificationHistory,
     Project,
     Trash,
@@ -256,7 +257,7 @@ def _fingerprint(object_type: str, name: str, payload):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _upsert_object(firewall: Firewall, obj_data: dict, user: str):
+def _upsert_object(firewall: Firewall, obj_data: dict, user: str, import_record=None):
     object_type = obj_data.get("object_type")
     name = obj_data.get("name")
 
@@ -288,6 +289,7 @@ def _upsert_object(firewall: Firewall, obj_data: dict, user: str):
             description=description,
             payload=payload,
             raw_excerpt=raw_excerpt,
+            import_id=import_record.id if import_record is not None else None,
             fingerprint=_fingerprint(object_type, name, payload),
             created_by=user,
             updated_by=user,
@@ -339,8 +341,39 @@ def _upsert_object(firewall: Firewall, obj_data: dict, user: str):
     obj.raw_excerpt = raw_excerpt
     obj.fingerprint = _fingerprint(object_type, name, payload)
     obj.updated_by = user
+    if import_record is not None:
+        obj.import_id = import_record.id
 
     return obj, action
+
+
+def _delete_previous_import(firewall: Firewall, user: str):
+    """Remove the objects of the firewall's previous import run.
+
+    A new import replaces the previous one: every object created by the
+    latest import record — together with its modification history and trash
+    rows (ORM cascade) — is deleted before the new configuration is applied.
+    Objects without an import_id (manually created, or imported before the
+    history existed) are left untouched.
+
+    Returns ``(removed_count, previous_record)``.
+    """
+    record = (
+        ImportRecord.query.filter_by(firewall_id=firewall.id)
+        .order_by(ImportRecord.created_at.desc(), ImportRecord.id.desc())
+        .first()
+    )
+
+    if record is None:
+        return 0, None
+
+    removed = 0
+
+    for obj in ConfigObject.query.filter_by(import_id=record.id).all():
+        db.session.delete(obj)
+        removed += 1
+
+    return removed, record
 
 
 def _mock_push_config(firewall: Firewall, config_text: str):
@@ -408,11 +441,13 @@ def _progress_line(stage, percent, detail=""):
     ) + "\n"
 
 
-def _stream_parse_and_import(firewall_id, vendor, selected_types, raw_data, user, start_percent, end_percent):
+def _stream_parse_and_import(firewall_id, vendor, selected_types, raw_data, user, start_percent, end_percent, source_type, source_name):
     """Yield NDJSON lines while parsing and upserting one configuration.
 
     Runs inside a fresh application context (see the stream routes) so the
-    DB work stays valid for the whole duration of the streamed response.
+    DB work stays valid for the whole duration of the streamed response. The
+    import replaces the previous one: the previous import's objects are
+    deleted first and the new objects carry the new import record.
     """
     firewall = Firewall.query.get_or_404(firewall_id)
 
@@ -441,13 +476,24 @@ def _stream_parse_and_import(firewall_id, vendor, selected_types, raw_data, user
     done = 0
 
     try:
+        replaced, _previous = _delete_previous_import(firewall, user)
+
+        record = ImportRecord(
+            firewall_id=firewall.id,
+            source_type=source_type,
+            source_name=source_name,
+            user=user,
+        )
+        db.session.add(record)
+        db.session.flush()
+
         for obj_data in parsed.objects:
             object_type = obj_data.get("object_type")
 
             if object_type not in selected_types:
                 continue
 
-            _, _action = _upsert_object(firewall, obj_data, user)
+            _, _action = _upsert_object(firewall, obj_data, user, record)
             counts[object_type] = counts.get(object_type, 0) + 1
             done += 1
 
@@ -461,6 +507,9 @@ def _stream_parse_and_import(firewall_id, vendor, selected_types, raw_data, user
                     "import", min(percent, end_percent), f"Imported {done}/{total_to_import} objects."
                 )
 
+        record.object_count = sum(counts.values())
+        record.counts = counts
+        record.warnings = parsed.warnings
         firewall.last_sync_at = datetime.now(timezone.utc)
         db.session.commit()
     except IntegrityError:
@@ -478,6 +527,8 @@ def _stream_parse_and_import(firewall_id, vendor, selected_types, raw_data, user
                 "message": f"Imported {sum(counts.values())} objects.",
                 "counts": counts,
                 "warnings": parsed.warnings,
+                "replaced": replaced,
+                "import_record": record.to_dict(),
             }
         )
         + "\n"
@@ -1042,17 +1093,41 @@ def import_config():
 
     user = current_user()
     counts = {}
+    record = None
+    replaced = 0
+
+    # The imported source, as shown in the import history.
+    if source_type == "file":
+        source_name = request.files.get("config_file").filename
+    else:
+        source_name = url
 
     try:
+        # A new import replaces the previous one: the previous import's
+        # objects are deleted before the new configuration is applied.
+        replaced, _previous = _delete_previous_import(firewall, user)
+
+        record = ImportRecord(
+            firewall_id=firewall.id,
+            source_type=source_type,
+            source_name=source_name,
+            user=user,
+        )
+        db.session.add(record)
+        db.session.flush()
+
         for obj_data in parsed.objects:
             object_type = obj_data.get("object_type")
 
             if object_type not in selected_types:
                 continue
 
-            _, action = _upsert_object(firewall, obj_data, user)
+            _, action = _upsert_object(firewall, obj_data, user, record)
             counts[object_type] = counts.get(object_type, 0) + 1
 
+        record.object_count = sum(counts.values())
+        record.counts = counts
+        record.warnings = parsed.warnings
         firewall.last_sync_at = datetime.now(timezone.utc)
         db.session.commit()
 
@@ -1065,7 +1140,31 @@ def import_config():
         message=f"Imported {sum(counts.values())} objects.",
         counts=counts,
         warnings=parsed.warnings,
+        replaced=replaced,
+        import_record=record.to_dict() if record is not None else None,
     ), 200
+
+
+@api_bp.route("/import/records", methods=["GET"])
+def import_records():
+    """Import history, newest first.
+
+    ``?firewall_id=N`` scopes the list to that firewall's import runs (the
+    import form's "Import history" panel); without it the recent records of
+    every firewall are returned.
+    """
+    firewall_id = (request.args.get("firewall_id") or "").strip()
+
+    query = ImportRecord.query.order_by(
+        ImportRecord.created_at.desc(), ImportRecord.id.desc()
+    )
+
+    if firewall_id.isdigit():
+        query = query.filter_by(firewall_id=int(firewall_id))
+
+    items = [record.to_dict() for record in query.limit(20).all()]
+
+    return jsonify(items=items), 200
 
 
 @api_bp.route("/import/stream", methods=["POST"])
@@ -1163,12 +1262,14 @@ def import_config_stream():
 
                 raw_data = b"".join(chunks).decode("utf-8", errors="replace")
                 yield from _stream_parse_and_import(
-                    firewall_id_captured, vendor_captured, selected_types, raw_data, user_captured, 65, 95
+                    firewall_id_captured, vendor_captured, selected_types, raw_data, user_captured, 65, 95,
+                    source_type, url,
                 )
             else:
                 raw_data = file_bytes.decode("utf-8", errors="replace")
                 yield from _stream_parse_and_import(
-                    firewall_id_captured, vendor_captured, selected_types, raw_data, user_captured, 25, 95
+                    firewall_id_captured, vendor_captured, selected_types, raw_data, user_captured, 25, 95,
+                    source_type, file.filename,
                 )
 
     return _ndjson_response(generate())
@@ -1888,6 +1989,93 @@ def restore_trash(trash_id):
         ) from exc
 
     return jsonify(status="ok", message=message), 200
+
+
+@api_bp.route("/trash/permanent-delete", methods=["POST"])
+def permanent_delete_trash():
+    """Permanently delete deleted objects from the trash (no restore).
+
+    The project's trash can offers two modes: ``trash_ids`` lists the trash
+    entries selected with the row checkboxes, or ``all: true`` (plus
+    ``project_id``) removes every deleted object of that project. For each
+    entry the configuration object, its modification history and its trash
+    row are removed from the database — the object's name is freed and the
+    entry can never be restored again. Nothing else (firewalls, projects,
+    other objects) is touched.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+
+    trash_ids = []
+    for item in data.get("trash_ids") or []:
+        try:
+            trash_ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+
+    scope_id = None
+    if data.get("all"):
+        raw_scope = str(data.get("project_id") or "").strip()
+
+        if not raw_scope.isdigit():
+            raise ValidationError("project_id is required to delete every trash entry.")
+
+        scope_id = int(raw_scope)
+    elif not trash_ids:
+        raise ValidationError("Select at least one object to delete.")
+
+    # Only un-restored "object" entries are ever in scope.
+    query = Trash.query.filter(
+        Trash.item_type == "object",
+        Trash.restored_at.is_(None),
+    )
+
+    if scope_id is None:
+        query = query.filter(Trash.id.in_(trash_ids))
+
+    deleted = 0
+
+    for trash in query.all():
+        obj = (
+            ConfigObject.query.get(trash.config_object_id)
+            if trash.config_object_id
+            else None
+        )
+
+        # "all" mode only touches the objects of the given project.
+        if obj is not None and scope_id is not None and obj.project_id != scope_id:
+            continue
+
+        if obj is None:
+            # The object row is already gone — drop the dangling entry.
+            db.session.delete(trash)
+        else:
+            # Deleting the object cascades (delete-orphan) to its
+            # modification history and to its trash row.
+            db.session.delete(obj)
+
+        deleted += 1
+
+    if not deleted:
+        raise ValidationError("No trash entries matched (already restored or removed).")
+
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        db.session.rollback()
+        raise ValidationError(
+            "Permanent delete failed due to a database constraint violation."
+        ) from exc
+
+    return (
+        jsonify(
+            status="ok",
+            deleted=deleted,
+            message=(
+                f"{deleted} object{'s' if deleted != 1 else ''} permanently deleted."
+            ),
+        ),
+        200,
+    )
 
 
 # ---------------------------------------------------------------------------

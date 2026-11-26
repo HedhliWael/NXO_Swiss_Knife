@@ -610,9 +610,20 @@ def import_page():
 
     The wizard is client-side (the Alpine ``importWizard()`` component in
     app.js) and POSTs to ``/api/import`` — this page is GET-only and only
-    renders the wizard.
+    renders the wizard. ``?project_id=`` (the per-row Import action on the
+    project page) makes the wizard's back link and Back button return to
+    that project page instead of the dashboard.
     """
     firewalls = _all_firewalls()
+
+    project = None
+    raw_project_id = (request.args.get("project_id") or "").strip()
+
+    if raw_project_id.isdigit():
+        candidate = Project.query.get(int(raw_project_id))
+
+        if candidate is not None and not candidate.is_deleted:
+            project = candidate
 
     # JSON-safe firewall list for the Alpine wizard (embedded in a
     # single-quoted x-data attribute; '<' escaped like export_page does).
@@ -630,6 +641,7 @@ def import_page():
 
     return render_template(
         "import.html",
+        project=project,
         firewalls=firewalls,
         firewalls_json=firewalls_json,
         object_types=ALLOWED_OBJECT_TYPES,

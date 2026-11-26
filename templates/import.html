@@ -6,7 +6,13 @@
 <div class="space-y-6">
     <!-- Page Header -->
     <div class="entrance">
-        <a href="{{ url_for('views.dashboard') }}" class="link" style="font-size: 0.8125rem;">← Dashboard</a>
+        <a
+            href="{% if project %}{{ url_for('views.project_detail', project_id=project.id) }}{% else %}{{ url_for('views.dashboard') }}{% endif %}"
+            class="link"
+            style="font-size: 0.8125rem;"
+        >
+            ← {% if project %}{{ project.name }}{% else %}Dashboard{% endif %}
+        </a>
         <h1 style="font-size: 2.25rem; font-weight: 700; color: var(--color-ink); margin-top: 0.5rem; letter-spacing: -0.01em;">Import Configuration</h1>
     </div>
 
@@ -25,7 +31,7 @@
         </div>
     {% else %}
         <!-- Import Wizard (Alpine — POSTs to /api/import; the page itself is GET-only) -->
-        <div x-data='importWizard({{ firewalls_json }})' class="entrance entrance-delay-1 space-y-5">
+        <div x-data='importWizard({{ firewalls_json }}, {{ project.id if project else "null" }})' x-init="init()" class="entrance entrance-delay-1 space-y-5">
             <!-- Step indicator -->
             <div class="step-indicator">
                 <span :class="step === 1 ? 'step-dot-active' : (step > 1 ? 'step-dot-done' : 'step-dot-inactive')"
@@ -51,7 +57,7 @@
                     <h2 style="font-size: 1.125rem; font-weight: 600; color: var(--color-ink); margin: 0;">Firewall</h2>
                     <p style="font-size: 0.875rem; color: var(--color-ink-muted); margin: 0;">Select the firewall that will receive the imported objects.</p>
 
-                    <select class="input" @change="firewall_id = $event.target.value">
+                    <select class="input" @change="firewall_id = $event.target.value; onFirewallChange()">
                         <option value="" disabled selected>Select a firewall</option>
                         <template x-for="fw in firewalls" :key="fw.id">
                             <option :value="fw.id" x-text="`${fw.name} (${fw.vendor})${fw.model ? ' — ' + fw.model : ''}`"></option>
@@ -60,7 +66,8 @@
 
                     <p x-show="error" style="font-size: 0.8125rem; color: #dc2626; margin: 0;" x-text="error"></p>
 
-                    <div style="display: flex; justify-content: flex-end;">
+                    <div style="display: flex; justify-content: space-between;">
+                        <button type="button" @click="goOrigin()" class="btn btn-secondary">Back</button>
                         <button type="button" @click="next()" class="btn btn-primary">Next</button>
                     </div>
                 </section>
@@ -111,6 +118,10 @@
                     <div>
                         <label class="input-label">Object types</label>
                         <p style="font-size: 0.75rem; color: var(--color-ink-muted); margin: 0 0 0.5rem;">Import only the selected types — everything else in the file is ignored.</p>
+                        <div style="display: flex; gap: 1rem; font-size: 0.8125rem; margin-bottom: 0.75rem;">
+                            <button type="button" @click="selectAllTypes()" class="link" style="padding: 0;">Select all</button>
+                            <button type="button" @click="clearAllTypes()" class="link" style="padding: 0; color: var(--color-ink-muted);">Clear</button>
+                        </div>
                         <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem;">
                             <template x-for="t in types" :key="t">
                                 <div :class="object_types.includes(t) ? 'ring-2 ring-[#2563eb] border-transparent' : 'border-slate-200'"
@@ -121,6 +132,43 @@
                                     </label>
                                 </div>
                             </template>
+                        </div>
+                    </div>
+
+                    <!-- Import history (GET /api/import/records) — a new import replaces the previous one -->
+                    <div x-show="firewall()" style="border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-sunken); padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                        <p style="margin: 0; font-size: 0.8125rem; font-weight: 600; color: var(--color-ink);">Import history — <span x-text="firewall() ? firewall().name : ''"></span></p>
+                        <p style="margin: 0; font-size: 0.75rem; color: var(--color-ink-muted);">Importing replaces the previous import of this firewall: its objects are removed before the new configuration is applied.</p>
+                        <div x-show="historyLoading" style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; color: var(--color-ink-muted);">
+                            <div class="spinner" style="width: 12px; height: 12px;"></div>
+                            Loading import history...
+                        </div>
+                        <p x-show="!historyLoading && importHistory.length === 0" style="margin: 0; font-size: 0.75rem; color: var(--color-ink-muted);">No previous import for this firewall.</p>
+                        <div x-show="!historyLoading && importHistory.length > 0" class="table-container">
+                            <table>
+                                <thead class="table-header">
+                                    <tr>
+                                        <th style="padding: 0.625rem 0.875rem;">Date</th>
+                                        <th style="padding: 0.625rem 0.875rem;">Source</th>
+                                        <th style="padding: 0.625rem 0.875rem;">Objects</th>
+                                        <th style="padding: 0.625rem 0.875rem;">Types</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="rec in importHistory" :key="rec.id">
+                                        <tr class="table-row">
+                                            <td class="table-cell" style="font-size: 0.8125rem; color: var(--color-ink-muted); white-space: nowrap;">
+                                                <span x-text="rec.created_at ? new Date(rec.created_at).toLocaleString() : '—'"></span>
+                                            </td>
+                                            <td class="table-cell" style="font-size: 0.8125rem;">
+                                                <span style="font-weight: 500;" x-text="rec.source_type === 'file' ? `File — ${rec.source_name || 'unknown'}` : (rec.source_name || 'URL')"></span>
+                                            </td>
+                                            <td class="table-cell" style="font-size: 0.8125rem;" x-text="rec.object_count"></td>
+                                            <td class="table-cell" style="font-size: 0.75rem; color: var(--color-ink-muted);" x-text="rec.counts ? Object.entries(rec.counts).map(([t, n]) => `${t} ${n}`).join(', ') : '—'"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 
@@ -145,7 +193,7 @@
                         <p style="margin: 0;"><span style="color: var(--color-ink-muted);">Object types:</span> <span style="font-weight: 500; color: var(--color-ink);" x-text="object_types.length ? `${object_types.join(', ')} (${object_types.length})` : '—'"></span></p>
                     </div>
 
-                    <p style="font-size: 0.75rem; color: var(--color-ink-muted); margin: 0;">Importing is an upsert: objects with the same name are updated, new ones are created. The change history records every modification.</p>
+                    <p style="font-size: 0.75rem; color: var(--color-ink-muted); margin: 0;">Importing is an upsert: objects with the same name are updated, new ones are created. The previous import of this firewall is replaced — its objects are removed first. The change history records every modification.</p>
 
                     <!-- Errors -->
                     <div x-show="error" class="flash flash-error" x-text="error"></div>
@@ -164,6 +212,10 @@
                             <p style="margin: 0; font-size: 0.75rem; color: #d97706;" x-text="w"></p>
                         </template>
 
+                        <p x-show="result && result.replaced > 0" style="margin: 0; font-size: 0.75rem; color: #065f46;">
+                            Previous import removed: <span x-text="result && result.replaced"></span> object<span x-show="result && result.replaced !== 1">s</span>.
+                        </p>
+
                         <div style="display: flex; gap: 0.75rem; margin-top: 0.25rem;">
                             <a :href="`/objects?firewall_id=${firewall_id}`" class="btn btn-secondary btn-sm">View objects</a>
                         </div>
@@ -171,13 +223,19 @@
 
                     <div style="display: flex; justify-content: space-between;">
                         <button type="button" @click="back()" class="btn btn-secondary" x-show="!result && !busy">Back</button>
-                        <button type="button" @click="submitImport()" :disabled="busy"
-                                :class="result ? 'btn-secondary' : 'btn-primary'" class="btn"
-                                :style="busy ? 'opacity: 0.6; cursor: wait;' : ''">
-                            <span x-show="busy">Importing...</span>
-                            <span x-show="!busy && result">Import again</span>
-                            <span x-show="!busy && !result">Import</span>
-                        </button>
+                        <div style="display: flex; gap: 0.75rem; flex: 1; justify-content: flex-end;">
+                            <button type="button" @click="submitImport()" :disabled="busy" class="btn btn-primary" x-show="!result"
+                                    :style="busy ? 'opacity: 0.6; cursor: wait;' : ''">
+                                <span x-show="busy">Importing...</span>
+                                <span x-show="!busy">Import</span>
+                            </button>
+                            <!-- After a successful import there is no "Import again":
+                                 the wizard is done, back to the page it was
+                                 opened from (project page or dashboard). -->
+                            <button type="button" @click="goOrigin()" class="btn btn-primary" x-show="result">
+                                <span x-text="projectId ? 'Back to project' : 'Back to dashboard'"></span>
+                            </button>
+                        </div>
                     </div>
                 </section>
             </div>
