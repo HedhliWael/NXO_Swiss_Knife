@@ -78,6 +78,11 @@ Core capabilities:
   **Restore** button in place of Delete.
 - **Export**: generate vendor configuration text (temporary download link) or
   push it with streaming progress (currently a mock push).
+- **Authentication**: local user/password accounts stored in a **separate
+  database file** (`instance/users.db`); session login (`/login`), a login
+  guard on every page and API route, and **user management on the
+  dashboard** (add users, reset passwords, enable/disable, delete). The
+  initial `admin` account is bootstrapped on first start.
 - REST **API** (`/api/...`) plus a browser UI (Alpine.js + Tailwind CDN).
 
 ### Stack
@@ -85,7 +90,8 @@ Core capabilities:
 | Layer | Technology |
 |---|---|
 | Web framework | Flask 2.3.3 |
-| ORM / DB | Flask-SQLAlchemy 3.0.5, SQLAlchemy 2.1.9, SQLite (`instance/swissknife.db`) |
+| ORM / DB | Flask-SQLAlchemy 3.0.5, SQLAlchemy 2.1.9, SQLite — main DB `instance/swissknife.db` **+ separate users DB `instance/users.db`** (the `User` model, bound via `SQLALCHEMY_BINDS`/`__bind_key__`) |
+| Auth | Flask session login (`app/auth.py`); passwords hashed with `werkzeug.security` (scrypt + per-password salt) |
 | Forms / CSRF | Flask-WTF 1.1.1, WTForms 3.0.1 |
 | Frontend JS | Alpine.js (CDN, v3) |
 | Styling | Tailwind CSS (CDN build — dev only) |
@@ -101,11 +107,13 @@ Python: 3.13 (`.venv` in the repository root).
 ```
 NXO_Swiss_Knife/
 ├── app/
-│   ├── factory.py          # create_app() — Flask factory, db.create_all() + one-off migrations
+│   ├── factory.py          # create_app() — Flask factory: main + users DB binds,
+│   │                       #   session-cookie config, db.create_all() + one-off migrations
 │   │                       #   (firewalls.project_id nullable, firewall auth columns,
 │   │                       #   config_objects.project_id nullable, export_included,
 │   │                       #   projects/firewalls is_deleted+deleted_at, trash table
-│   │                       #   rebuilt multi-type)
+│   │                       #   rebuilt multi-type), ensure_admin_user() bootstrap,
+│   │                       #   init_auth() (blueprints + login guard)
 │   ├── extensions.py       # db = SQLAlchemy()
 │   ├── models.py           # Project + Firewall (project_id nullable = can be
 │   │                       #   unassigned; model, auth_mode password|token, api_token;
@@ -117,7 +125,19 @@ NXO_Swiss_Knife/
 │   │                       #   history; a new import replaces the previous one),
 │   │                       #   Trash (item_type object|project|
 │   │                       #   firewall — one row per deleted entity), ExportRecord
-│   │                       #   (generated/pushed config files kept on disk)
+│   │                       #   (generated/pushed config files kept on disk), User
+│   │                       #   (authentication account — SEPARATE users database,
+│   │                       #   __bind_key__="users", set_password/check_password via
+│   │                       #   werkzeug hashes, is_active, last_login_at)
+│   ├── auth.py             # Authentication: /login + /logout (form), /api/auth/login
+│   │                       #   (JSON, replaces the old env-var placeholder) +
+│   │                       #   /api/auth/me, /api/users CRUD (list/create/reset
+│   │                       #   password/enable-disable/delete — the dashboard's Users
+│   │                       #   section), authenticate() (timing-equalized, generic
+│   │                       #   error, 0.5 s delay + log on failure), the before_request
+│   │                       #   login guard (pages → /login?next=…, API → 401 JSON),
+│   │                       #   ensure_admin_user() (first-start bootstrap of `admin`),
+│   │                       #   init_auth() (blueprints + guard)
 │   ├── views.py            # Web UI routes (dashboard, project pages w/ per-firewall/per-type
 │   │                       #   stats + previous-exports list, attach/remove firewall, import
 │   │                       #   (?project_id= → wizard's back link/button returns to the
@@ -141,7 +161,9 @@ NXO_Swiss_Knife/
 │   ├── forms/              # ProjectForm (used by the project edit page)
 │   └── vendors/            # base.py, factory.py (parser registry), paloalto.py, fortinet.py
 ├── templates/
-│   ├── base.html           # Layout + navbar (Dashboard / Trash, block `nav`) +
+│   ├── base.html           # Layout + navbar (Dashboard / Trash, block `nav`, + the
+│   │                       #   signed-in user chip and the Sign out POST form outside
+│   │                       #   the block so every page shows them) +
 │   │                       #   section system (`.section` as a sunken surface
 │   │                       #   slab with ruled `.section-head` — wraps on narrow
 │   │                       #   screens: `.section-kicker` / `.section-title` /
@@ -150,9 +172,15 @@ NXO_Swiss_Knife/
 │   │                       #   icon via ::before + 4px left accent bar + soft tint)
 │   │                       #   + scripts (app.js BEFORE Alpine, loaded with a
 │   │                       #   ?v= cache-buster — Jinja global `app_version` = app.js mtime)
-│   ├── index.html          # Dashboard as three labeled sections: Statistics (stat cards
+│   ├── login.html          # Standalone login page (own minimal copy of the design
+│   │                       #   tokens; username/password form with a hidden `next`
+│   │                       #   field, generic error flash, first-start admin hint)
+│   ├── index.html          # Dashboard as four labeled sections: Statistics (stat cards
 │   │                       #   with label + icon in a shared head row, value below),
-│   │                       #   Projects (card grid), Firewalls (card grid); hero
+│   │                       #   Projects (card grid), Firewalls (card grid), Users (the
+│   │                       #   account table + Add user modal — one userManagement()
+│   │                       #   Alpine instance per section, its x-data embeds the signed-in
+│   │                       #   username as JSON → single-quoted attribute); hero
 │   │                       #   holds the New Project / New Firewall actions; hosts both
 │   │                       #   creation wizards (modals) + the edit-firewall modal
 │   ├── _project_wizard.html  # 3-step project creation wizard (basic data → attach
@@ -236,12 +264,18 @@ NXO_Swiss_Knife/
 ├── static/js/app.js        # Alpine components: dashboard, firewallDashboard, projectWizard,
 │   │                       #   firewallWizard, firewallEdit, objectTable, exportWizard,
 │   │                       #   importWizard (origin-aware Back, Select all / Clear,
-│   │                       #   import history), trashBin (object-trash search)
+│   │                       #   import history), trashBin (object-trash search),
+│   │                       #   userManagement (dashboard Users section: list, add user
+│   │                       #   modal, one-shot generated-password notice with copy,
+│   │                       #   reset password / enable-disable / delete)
 ├── instance/swissknife.db  # SQLite database (tables auto-created + migrated at startup)
+├── instance/users.db       # SEPARATE SQLite database for the authentication accounts
+│   │                       #   (User model via SQLALCHEMY_BINDS "users"; gitignored)
 ├── instance/exports/       # Generated/pushed configuration files (export records;
 │   │                       #   created on first export, ignored by git)
 ├── .gitignore              # ignores .venv/, __pycache__, QA/,
-│   │                       #   instance/swissknife.db, instance/exports/, files/
+│   │                       #   instance/swissknife.db, instance/users.db,
+│   │                       #   instance/exports/, files/
 ├── QA/                   # STRICT location for every created test file and
 │   │                     #   generated log (test scripts, background-server
 │   │                     #   launcher + run logs, generated artifacts, API
@@ -273,6 +307,19 @@ Key design notes:
   the component (root cause of the 2026-11-24 edit-form bug). Bindings inside
   components must also short-circuit optional state (`connResult && …`),
   because Alpine evaluates `x-show` / `x-text` even on hidden elements.
+- **The users database is a separate file** (`instance/users.db`): Flask-SQLAlchemy
+  3.0.5 refuses two `SQLAlchemy()` instances on one app, so the `User` model
+  uses the same `db` extension with `__bind_key__ = "users"` +
+  `SQLALCHEMY_BINDS = {"users": …}` in the factory; the existing
+  `db.create_all()` creates the `users` table in that file automatically
+  (it defaults to `bind_key="__all__"`).
+- **Auth guards run per request** (`app.before_request`): page routes redirect
+  anonymous browsers to `/login?next=<path>` (the original target is restored
+  after signing in; `next` is validated to a relative, same-origin path),
+  `/api/*` routes answer JSON `401`. Static files, unknown paths (404) and
+  `/login` + `/logout` + `/api/auth/login` are exempt. The session cookie is
+  HttpOnly + SameSite=Lax, the session lives 8 h, and login clears the session
+  before storing the new identity (no session fixation).
 
 ---
 
@@ -287,7 +334,12 @@ pip install -r requirements.txt
 .venv\Scripts\python -c "from app.factory import create_app; create_app().run(host='127.0.0.1', port=5000)"
 ```
 
-Open `http://127.0.0.1:5000` — the dashboard is the landing page.
+Open `http://127.0.0.1:5000` — you are redirected to the **login page**
+(`http://127.0.0.1:5000/login`). On the **first start** the user database is
+empty: the app creates the initial **`admin`** account and prints its
+password to the server console **once** (stored hashed — not recoverable).
+Set `SWISSKNIFE_ADMIN_PASS` beforehand if you want a known password. New
+accounts are created on the dashboard → **Users** section.
 
 > **Note:** with debug mode **off**, Jinja templates are cached per process.
 > After editing any template, **restart the server**.
@@ -358,9 +410,11 @@ Environment variables (all optional):
 | Variable | Purpose | Default |
 |---|---|---|
 | `SWISSKNIFE_SECRET` | Flask secret key | `dev-secret-change-me` |
-| `DATABASE_URL` | SQLAlchemy URI | `sqlite:///swissknife.db` (in `instance/`) |
+| `DATABASE_URL` | SQLAlchemy URI of the main database | `sqlite:///swissknife.db` (in `instance/`) |
+| `USERS_DATABASE_URL` | SQLAlchemy URI of the **separate users database** | `sqlite:///users.db` (in `instance/`) |
 | `SWISSKNIFE_ENABLE_PUSH` | `1` to enable the mock push URL | off |
-| `SWISSKNIFE_ADMIN_USER` / `SWISSKNIFE_ADMIN_PASS` | placeholder login | `admin` / `change-me` |
+| `SWISSKNIFE_ADMIN_USER` / `SWISSKNIFE_ADMIN_PASS` | initial account bootstrapped on first start (used only when the users DB is empty; without `SWISSKNIFE_ADMIN_PASS` a random password is generated and printed once) | `admin` / (generated) |
+| `SWISSKNIFE_SESSION_SECURE` | `1` marks the session cookie `Secure` (production / HTTPS only — off for local HTTP dev) | `0` |
 
 The `RAG_*` variables (source root, Ollama URL, thresholds, chunk sizes) belong
 to the **Vector_DB** project, not to this app — see
@@ -405,17 +459,18 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned.
 | Streaming import with progress | `POST /api/import/stream` | NDJSON progress events (connect/download/parse/import); used by the firewall wizard for REST sources |
 | Connectivity check | `POST /api/connectivity` | TCP :443 + vendor API probe (Fortinet `/api?uuid=`, PAN-OS `/api/?type=op`), self-signed TLS handled, used by the firewall wizard and the export push step |
 | Trash + restore + permanent delete (objects, firewalls, projects) | `trash_page`, `trash.html`, `/api/trash` + `/api/trash/<id>/restore` + `/api/objects/<id>/restore` + `POST /api/trash/permanent-delete`, `Trash`/`Project`/`Firewall`/`ConfigObject` models, `trashBin()` | Deleted **projects and firewalls** are soft-deleted (cascading into the trash with their firewalls/objects) and restorable; the trash is **separated by level** — the **dashboard trash** (`/trash`, navbar link) lists the entries **per type** (Projects / Firewalls sections, each with counts, deleted date/reason and a Restore button) and each project's **trash can** (`GET /api/trash?project_id=N`, the trash-can icon on the project page) lists **that project's deleted objects** only — **every** deleted object is displayed (the **search box** filters them client-side by name / type / firewall / project / reason, "no match" empty state) plus **permanent delete**: row checkboxes (header checkbox = all visible rows) + **Delete selected (N)** / **Delete all (N)** buttons behind a `confirm()` → the object, its modification history and its trash row are removed from the database (name freed, no restore possible); restoring a project/firewall restores its descendants; a name stays reserved while its project/firewall entry is in the trash (trash-aware error on create/rename) |
-| REST API + error handlers | `app/api/routes.py`, `errors.py` | Projects (+`firewall_ids` attach), firewalls (+detail/update `GET/POST/PATCH /api/firewalls/<id>`), import (+stream), objects (GET/POST/commit), trash, export (file/push), connectivity, auth placeholder |
-| Auth placeholder | `/api/auth/login`, `current_user()` | Session user only — see Known issues |
+| REST API + error handlers | `app/api/routes.py`, `errors.py` | Projects (+`firewall_ids` attach), firewalls (+detail/update `GET/POST/PATCH /api/firewalls/<id>`), import (+stream), objects (GET/POST/commit), trash, export (file/push), connectivity; `current_user()` now returns the signed-in session username |
+| **Authentication (local user accounts, separate users DB)** | `app/auth.py`, `User` model in `app/models.py` (`__bind_key__="users"` → `instance/users.db` via `SQLALCHEMY_BINDS`), `templates/login.html`, `/login` + `/logout` + `/api/auth/login` (JSON) + `/api/auth/me` + `/api/users` (list / create / PATCH display_name·is_active·generate_password·password / DELETE), `ensure_admin_user()` in the factory, `userManagement()` in app.js, the dashboard's **Users** section | **Session login with user + password** for every page and API route (pages → `/login?next=…` redirect, the original page is restored after signing in; API → JSON 401; static files + 404s + the login routes stay open). Best practices applied: passwords hashed with `werkzeug.security` (scrypt + random per-password salt, never stored/computed in plain text), generic "Invalid username or password" answer, **timing equalization** (a dummy hash check when the user does not exist), 0.5 s delay + log line on failed logins, HttpOnly + SameSite=Lax session cookie, 8 h session lifetime, session cleared before the login is stored (no fixation), `next` validated to a relative same-origin path, logout POST-only (no forced-logout via link), username validated (2-64 chars `[A-Za-z0-9._-]`, unique), password 8-128 chars, the user list never returns the hash. **First start bootstraps the `admin` account** (name `SWISSKNIFE_ADMIN_USER`, password `SWISSKNIFE_ADMIN_PASS` or a random one **printed once** to the console). **User management on the dashboard** (Users section, `userManagement()`): account table (username + "you" badge, display name, active/disabled badge, last login, created) + **Add user** modal (password optional → server-generated, shown **once** in a warning notice with a copy button) + per-row **Reset password** (generated, shown once) / **Enable / Disable** / **Delete** behind confirms; guards: no deleting or disabling **your own** account, and the **last active account** can neither be disabled nor deleted (defense in depth). Navbar shows the signed-in username + **Sign out** on every page; the login page is standalone (same design system) with the first-start admin hint. The old `/api/auth/login` env-var placeholder is replaced by the same URL validating against the users DB (API clients can set the session programmatically) |
 | DB schema auto-creation + migrations | `factory.create_app` | `db.create_all()` + one-off migrations: `firewalls.project_id` nullable, `firewalls.model`/`auth_mode`/`api_token`, `config_objects.project_id` nullable (table rebuild), `config_objects.export_included`, `projects`/`firewalls` `is_deleted`+`deleted_at`, `trash` rebuilt multi-type, **`import_records` table** (new) + `config_objects.import_id` (nullable column) |
 | Demo data seed | `instance/swissknife.db` | "Demo Project" + 2 demo firewalls |
-| Vector DB (standalone project) | `C:\Users\hedhl\source\repos\Vector_DB` | indexes this repo **including the `files/` sample configs** (`.conf`/`.xml`/`.txt`) and the frontend (`templates/*.html` + `static/js/app.js`, Tree-sitter AST chunking); top-3 chunk retrieval with cosine threshold, file-scoped queries via `--where file=...` — the only search path for the multi-MB samples, see [§7](#7-vector-db-integration-token-efficient-development) |
+| Vector DB (standalone project) | `C:\Users\hedhl\source\repos\Vector_DB` | indexes this repo **including the `files/` sample configs** (`.conf`/`.xml`/`.txt`) and the frontend (`templates/*.html` + `static/js/app.js`); **chunker v2**: token-accurate (tiktoken) 400/500-token chunks, 0% overlap, Python split at function granularity (Tree-sitter AST, classes split per method), context headers embedded with each chunk, non-source files excluded; **retrieval**: top-10 (hard cap 12) + cosine threshold + dedup + **7,000-token strict budget** enforced before the prompt; file-scoped queries via `--where file=...` — the only search path for the multi-MB samples, see [§7](#7-vector-db-integration-token-efficient-development) |
 
 ### Planned (suggested backlog)
 
 | Feature | Notes |
 |---|---|
-| 📋 Real authentication | Replace `current_user()` / `/api/auth/login` with JWT or session login; protect API + UI routes |
+| 📋 Login rate limiting / lockout | Currently: 0.5 s delay + log per failed attempt; no persistent per-account/per-IP lockout |
+| 📋 User roles / permissions | All accounts have the same rights; guard logic is in place to build on |
 | 📋 Project delete from project page | Currently only from the dashboard cards |
 | 📋 Import: per-project pre-filter | Import wizard lists all firewalls; could accept `?project_id=` |
 | 📋 Config diff / change review | Compare old vs new payload before upsert (history exists, no diff view) |
@@ -431,8 +486,20 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned.
 
 ## 6. Known issues & technical debt
 
-- **No real authentication.** `current_user()` returns a session user or
-  "system"; the login endpoint is a demo placeholder.
+- **Login rate limiting is basic.** A 0.5 s delay + a log line per failed
+  attempt (plus timing equalization and a generic error message), but no
+  persistent lockout per account or IP — fine for a local tool, add a lockout
+  before exposing the app on a network.
+- **Session cookie `Secure` is off by default** (local HTTP dev). Set
+  `SWISSKNIFE_SESSION_SECURE=1` when running behind HTTPS.
+- **All users are administrators.** There are no roles/permissions yet —
+  every signed-in account can manage every other account (self-deletion / the
+  last-active-account guards are the only restrictions).
+- **The initial admin password is printed once** (console/log) when the users
+  DB is empty and `SWISSKNIFE_ADMIN_PASS` is not set — if the process output
+  is lost, the password is not recoverable (it is stored hashed); set the
+  env var for reproducible setups, or delete `instance/users.db` to start
+  over.
 - **`db.create_all()` at startup** — fine for dev, but schema evolution relies
   on the one-off migrations in `factory.py` (no Alembic): `firewalls.project_id`
   nullable, `firewalls.model`/`auth_mode`/`api_token` columns,
@@ -514,15 +581,31 @@ question):
   for how to query/index the store.
 - **What it indexes:** this repository (default extensions
   `.py`/`.js`/`.html`/`.css`/`.conf`/`.txt`/`.md` — `.md` files are indexed with
-  the heading-aware semantic segmenter; skips `node_modules/`, `dist/`, `build/`,
-  minified `.min.js`/`.min.css`, source maps `.map` and lockfiles; configurable
-  via `RAG_SOURCE_ROOT` / `--ext`). Chunks live in its own
+  the heading-aware semantic segmenter; Python is split at **function
+  granularity via the Tree-sitter AST** — functions and classes stay intact,
+  large classes split per method (`Class.method`); skips `__pycache__/`,
+  `.venv/`, `.git/`, `node_modules/`, `dist/`, `build/`, `instance/`, `QA/`,
+  editor/tool caches, minified assets, source maps, lockfiles **and non-source
+  data files** (`.json`, `.csv`, `.db`, binaries, ...); configurable via
+  `RAG_SOURCE_ROOT` / `--ext`). Chunks live in its own
   `./.vectordb` (ChromaDB, cosine; local Ollama `nomic-embed-text` embeddings).
-- **Token saving:** retrieval returns only the top 3 chunks (cosine >= 0.45,
-  ~300-500 words each with 50-word overlap) and the built LLM prompt contains
-  ONLY those chunks — typically a few thousand words instead of tens of
-  thousands per file. An unrelated query returns 0 chunks (the prompt says so
+- **Chunking (token-accurate):** 400-token target / **500-token hard cap** /
+  0% overlap, measured with a real tokenizer (tiktoken, cl100k_base). Every
+  chunk carries a prepended context header (`# File: path | Class: X |
+  Function: y`) that is embedded with it. A token-boundary safety net
+  guarantees the cap even on minified single-line files (the previous
+  word-based chunker produced 47,568-token chunks from the `files/` samples —
+  the root cause of the ~262k-token prompt overflow).
+- **Token saving:** retrieval returns only the top-k chunks (default 10,
+  **hard-capped at 12**, cosine >= 0.45, deduplicated), and a **strict token
+  budget (default 7,000 tokens)** is enforced right before the prompt is
+  built — lowest-scoring chunks are dropped (the best chunk truncated if even
+  it alone exceeds the budget), so the prompt context **can never exceed the
+  budget**. An unrelated query returns 0 chunks (the prompt says so
   explicitly) so no prompt tokens are wasted.
+- **After any chunker change:** wipe and re-index —
+  `python index_db.py --rebuild` from the Vector_DB repo (the indexer prints a
+  CHUNKER UPDATE PENDING reminder if it detects stale chunks).
 
 ### Workflow for feature development / modification
 
@@ -546,10 +629,13 @@ question):
    python rag_query.py "How is modification history written?" --where "file=app/models.py"
    ```
 
-   Feed the printed prompt — or the `prompt` field of
-   `POST http://127.0.0.1:5100/api/rag/query` — to the LLM. Only when the
-   query returns no useful information (0 relevant chunks, or chunks that do
-   not answer the question) may you fall back to reading the file directly.
+   The CLI prints the final context size (`context N / 7,000 tokens`) — the
+   token budget is enforced before the prompt is built, so the printed prompt
+   is always within budget. Feed the printed prompt — or the `prompt` field of
+   `POST http://127.0.0.1:5100/api/rag/query` (add `"token_budget": 7000` to
+   override) — to the LLM. Only when the query returns no useful information
+   (0 relevant chunks, or chunks that do not answer the question) may you fall
+   back to reading the file directly.
 
 3. **Implement the change** in this repo (models, views, API, templates,
    `PROJECT.md`).
@@ -562,7 +648,11 @@ question):
    python index_db.py --prune :: optional: drop chunks of files that were deleted
    ```
 
-   (or run the Vector_DB HTTP service and `POST /api/rag/reindex`).
+   (or run the Vector_DB HTTP service and `POST /api/rag/reindex`). **After
+   changing the chunking algorithm itself**, unchanged files would keep their
+   old chunks — wipe and re-index instead: `python index_db.py --rebuild`
+   (the indexer prints a CHUNKER UPDATE PENDING reminder when it detects
+   chunks from an older chunker version).
 
    If the run must be **backgrounded with a log** (Windows): never use
    `start "" python index_db.py > _log.txt 2>&1` — cmd redirection applies to
@@ -580,9 +670,10 @@ question):
 | `RAG_SOURCE_ROOT` | repository to index (this repo by default) | `C:/Users/hedhl/source/repos/NXO_Swiss_Knife` |
 | `RAG_OLLAMA_URL` | Ollama server URL | `http://127.0.0.1:11434` |
 | `RAG_EMBED_MODEL` | embedding model | `nomic-embed-text` |
-| `RAG_TOP_K` | chunks per query | `3` |
+| `RAG_TOP_K` | chunks per query (hard cap 12) | `10` |
 | `RAG_MIN_COSINE` | similarity threshold | `0.45` |
-| `RAG_CHUNK_MIN_WORDS` / `RAG_CHUNK_MAX_WORDS` / `RAG_CHUNK_OVERLAP_WORDS` | chunk sizes | `300` / `500` / `50` |
+| `RAG_CHUNK_TARGET_TOKENS` / `RAG_CHUNK_MAX_TOKENS` | chunk target / **hard cap** (tiktoken tokens) | `400` / `500` |
+| `RAG_TOKEN_BUDGET` | strict cap on retrieved context per query (tokens) | `7000` |
 | `VECTOR_DB_HOST` / `VECTOR_DB_PORT` | HTTP service binding | `127.0.0.1` / `5100` |
 
 Notes:

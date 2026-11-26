@@ -206,6 +206,100 @@
         </div>
     </section>
 
+    <!-- ═══ Section · Users ═════════════════════════════════════ -->
+    <!-- Single userManagement() instance wraps the whole section: the
+         section head's Add user button, the table and the modal share its
+         state. The x-data embeds JSON, so the attribute is single-quoted
+         (see the Alpine note in PROJECT.md §2). -->
+    <section
+        class="section entrance entrance-delay-4"
+        x-data='userManagement({{ session.get('username', '')|tojson }})'
+        x-init="init()"
+    >
+        <div class="section-head">
+            <div class="section-head-main">
+                <p class="section-kicker">Administration</p>
+                <h2 class="section-title">Users</h2>
+                <p class="section-sub">Local accounts that can sign in — stored in a separate users database, passwords hashed.</p>
+            </div>
+            <div class="section-head-actions">
+                <button type="button" @click="openAdd()" class="btn btn-primary">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                    Add user
+                </button>
+            </div>
+        </div>
+
+        <!-- One-shot notice: a generated / reset password, shown exactly once -->
+        <div x-show="notice" class="flash flash-warning" style="margin-bottom: 1.25rem;">
+            <span x-text="notice"></span>
+            <button type="button" @click="copyNoticePassword()" class="btn btn-secondary btn-xs" style="margin-left: 0.5rem;">Copy</button>
+        </div>
+
+        <div x-show="error" class="flash flash-error" style="margin-bottom: 1.25rem;" x-text="error"></div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr class="table-header">
+                        <th>Username</th>
+                        <th>Display name</th>
+                        <th>Status</th>
+                        <th>Last login</th>
+                        <th>Created</th>
+                        <th style="text-align: right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="user in users" :key="user.id">
+                        <tr class="table-row">
+                            <td class="table-cell" style="font-weight: 600;">
+                                <span x-text="user.username"></span>
+                                <span x-show="user.username === me" class="badge badge-info" style="margin-left: 0.375rem;">you</span>
+                            </td>
+                            <td class="table-cell table-cell-muted" x-text="user.display_name || '—'"></td>
+                            <td class="table-cell">
+                                <span x-show="user.is_active" class="badge badge-success">active</span>
+                                <span x-show="!user.is_active" class="badge badge-muted">disabled</span>
+                            </td>
+                            <td class="table-cell table-cell-muted" x-text="formatDate(user.last_login_at)"></td>
+                            <td class="table-cell table-cell-muted" x-text="formatDate(user.created_at)"></td>
+                            <td class="table-cell" style="text-align: right; white-space: nowrap;">
+                                <button type="button" class="btn btn-secondary btn-xs" @click="resetPassword(user)" :disabled="busy !== ''">Reset password</button>
+                                <button type="button" x-show="user.username !== me" class="btn btn-ghost btn-xs" @click="toggleActive(user)" :disabled="busy !== ''" x-text="user.is_active ? 'Disable' : 'Enable'"></button>
+                                <button type="button" x-show="user.username !== me" class="btn btn-danger btn-xs" @click="removeUser(user)" :disabled="busy !== ''">Delete</button>
+                            </td>
+                        </tr>
+                    </template>
+                    <tr x-show="!loading && users.length === 0">
+                        <td colspan="6" class="table-cell table-cell-muted" style="padding: 1.5rem; text-align: center;">No users — this should not happen (the admin account is created on first start).</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Add user modal -->
+        <div x-show="showAdd" class="modal-overlay" @click.self="showAdd = false">
+            <div class="modal-content">
+                <h3 style="margin: 0 0 0.25rem; font-size: 1.125rem; font-weight: 700;">Add user</h3>
+                <p style="margin: 0 0 1.25rem; font-size: 0.8125rem; color: var(--color-ink-muted);">Leave the password empty to generate one — it is shown once.</p>
+                <form @submit.prevent="addUser()">
+                    <label class="input-label" for="user-add-username">Username</label>
+                    <input id="user-add-username" class="input" x-model="add.username" autocomplete="off" required>
+                    <label class="input-label" for="user-add-display" style="margin-top: 0.875rem;">Display name (optional)</label>
+                    <input id="user-add-display" class="input" x-model="add.displayName" autocomplete="off">
+                    <label class="input-label" for="user-add-password" style="margin-top: 0.875rem;">Password (optional, min. 8 characters)</label>
+                    <input id="user-add-password" class="input" type="password" x-model="add.password" autocomplete="new-password">
+                    <div x-show="addError" class="flash flash-error" style="margin-top: 1rem;" x-text="addError"></div>
+                    <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem;">
+                        <button type="button" class="btn btn-secondary" @click="showAdd = false">Cancel</button>
+                        <button type="submit" class="btn btn-primary" :disabled="busy !== ''" x-text="busy === 'add' ? 'Adding…' : 'Add user'"></button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </section>
+
     <!-- Project Wizard Modal -->
     <div x-show="showProjectWizard" class="modal-overlay" @click.self="showProjectWizard = false">
         <div class="modal-content">

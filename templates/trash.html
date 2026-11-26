@@ -222,19 +222,19 @@
                             <p class="empty-state-text">No objects in the trash.</p>
                         </div>
 
-                        <div x-show="items.length > 0 && filteredItems.length === 0" class="empty-state">
+                        <div x-show="items.length > 0 && filteredItems().length === 0" class="empty-state">
                             <div class="empty-state-icon">🔍</div>
                             <p class="empty-state-text">No objects in the trash match “<span x-text="search.trim()"></span>”.</p>
                         </div>
 
-                        <div x-show="filteredItems.length > 0" class="table-container">
+                        <div x-show="filteredItems().length > 0" class="table-container">
                             <table>
                                 <thead class="table-header">
                                     <tr>
                                         <th style="padding: 0.75rem 1rem; width: 2.5rem;">
                                             <input
                                                 type="checkbox"
-                                                :checked="allSelected"
+                                                :checked="allSelected()"
                                                 @change="toggleAll()"
                                                 aria-label="Select all visible objects"
                                                 style="cursor: pointer;"
@@ -250,7 +250,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <template x-for="item in filteredItems" :key="`o-${item.trash_id}`">
+                                    <template x-for="item in filteredItems()" :key="`o-${item.trash_id}`">
                                         <tr class="table-row">
                                             <td class="table-cell">
                                                 <input

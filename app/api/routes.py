@@ -45,20 +45,13 @@ api_bp = Blueprint("api", __name__, url_prefix="/api")
 # ---------------------------------------------------------------------------
 
 def current_user():
+    """The authenticated user's username (session login — see app/auth.py).
+
+    Every request that reaches these handlers is authenticated (the login
+    guard in ``init_auth`` rejects the rest), so this returns the signed-in
+    username. The ``"system"`` fallback only applies outside a request.
     """
-    Placeholder user resolution.
-
-    In production, replace this with JWT, OAuth2, LDAP, or session-based authentication.
-    """
-    auth_header = request.headers.get("Authorization", "")
-
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:].strip()
-        return token[:64] or "system"
-
-    # Use the `session` global (Flask >= 2.x): `request.session` does not
-    # exist on the Request object and raises AttributeError.
-    return session.get("user") or "system"
+    return session.get("username") or "system"
 
 
 def _project_payload(project: Project):
@@ -768,33 +761,11 @@ def handle_unexpected_error(error):
 
 
 # ---------------------------------------------------------------------------
-# Auth Placeholder
+# Auth
 # ---------------------------------------------------------------------------
-
-@api_bp.route("/auth/login", methods=["POST"])
-def auth_login():
-    """
-    Minimal login endpoint for demonstration.
-
-    Replace with real authentication in production.
-    """
-    data = request.get_json(force=True, silent=True) or {}
-
-    username = data.get("username", "")
-    password = data.get("password", "")
-
-    expected_user = os.getenv("SWISSKNIFE_ADMIN_USER", "admin")
-    expected_password = os.getenv("SWISSKNIFE_ADMIN_PASS", "change-me")
-
-    if not username or not password:
-        raise ValidationError("Username and password are required.")
-
-    if username != expected_user or password != expected_password:
-        logger.warning("Failed login attempt for user %r.", username)
-        return jsonify(error="Invalid credentials."), 401
-
-    session["user"] = username
-    return jsonify(status="ok", user=username), 200
+# Real authentication (session login, user management API) lives in
+# app/auth.py — /login, /logout, /api/auth/login (JSON), /api/auth/me and
+# /api/users — registered by init_auth() in the factory.
 
 
 # ---------------------------------------------------------------------------

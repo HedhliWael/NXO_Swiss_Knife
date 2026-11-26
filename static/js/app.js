@@ -1818,10 +1818,13 @@ function trashBin(projectId) {
     busy: "",
 
     // Object-trash search: filters the deleted-objects list by name, type,
-    // firewall, project or reason (client-side, no server call). A getter —
-    // the template reads it as a property; as a method, x-for iterated the
-    // function itself (non-iterable) and the table rendered no rows at all.
-    get filteredItems() {
+    // firewall, project or reason (client-side, no server call).
+    // It must be a METHOD called as filteredItems() in the template: as a
+    // getter, Alpine invokes it against the raw data (this.search is then
+    // read without reactivity tracking), so the x-for never re-rendered when
+    // the user typed. Referencing it without calling it would make x-for
+    // iterate the function itself (non-iterable) and render no rows.
+    filteredItems() {
       const term = (this.search || "").trim().toLowerCase();
 
       if (!term) {
@@ -1893,19 +1896,24 @@ function trashBin(projectId) {
     },
 
     // Header checkbox: every row visible in the current search filter.
-    get allSelected() {
+    // Method (called allSelected() in the template) so this.filteredItems()
+    // is read through the reactive proxy and stays in sync with the search.
+    allSelected() {
+      const visible = this.filteredItems();
       return (
-        this.filteredItems.length > 0 &&
-        this.filteredItems.every((item) => this.selected.includes(item.trash_id))
+        visible.length > 0 &&
+        visible.every((item) => this.selected.includes(item.trash_id))
       );
     },
 
     toggleAll() {
-      if (this.allSelected) {
-        const visible = new Set(this.filteredItems.map((item) => item.trash_id));
+      const visibleItems = this.filteredItems();
+
+      if (this.allSelected()) {
+        const visible = new Set(visibleItems.map((item) => item.trash_id));
         this.selected = this.selected.filter((id) => !visible.has(id));
       } else {
-        for (const item of this.filteredItems) {
+        for (const item of visibleItems) {
           if (!this.selected.includes(item.trash_id)) {
             this.selected.push(item.trash_id);
           }
@@ -1974,6 +1982,160 @@ function trashBin(projectId) {
         alert(error.message);
         this.busy = "";
       }
+    }
+  };
+}
+
+
+// ── User management (dashboard → Users section) ─────────────────
+// Local accounts behind the session login. The password of a generated
+// or reset account is returned by the API exactly once and shown in a
+// warning notice with a copy button (it is stored hashed and can never
+// be shown again).
+function userManagement(me) {
+  return {
+    me,
+    users: [],
+    loading: true,
+    error: "",
+    showAdd: false,
+    add: { username: "", displayName: "", password: "" },
+    addError: "",
+    busy: "",
+    notice: "",
+    noticePassword: "",
+
+    async init() {
+      await this.load();
+    },
+
+    async load() {
+      this.loading = true;
+      this.error = "";
+
+      try {
+        this.users = await api("/api/users");
+      } catch (error) {
+        this.error = error.message;
+      }
+
+      this.loading = false;
+    },
+
+    openAdd() {
+      this.add = { username: "", displayName: "", password: "" };
+      this.addError = "";
+      this.showAdd = true;
+    },
+
+    async addUser() {
+      this.busy = "add";
+      this.addError = "";
+
+      try {
+        const result = await api("/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(this.add)
+        });
+        this.showAdd = false;
+        await this.load();
+        if (result.generated_password) {
+          this.showNotice(result.user.username, result.generated_password);
+        }
+      } catch (error) {
+        this.addError = error.message;
+        this.busy = "";
+        return;
+      }
+
+      this.busy = "";
+    },
+
+    async resetPassword(user) {
+      if (
+        !confirm(
+          `Reset the password of '${user.username}'? A new password is generated and shown once.`
+        )
+      ) {
+        return;
+      }
+
+      this.busy = "reset";
+      this.error = "";
+
+      try {
+        const result = await api(`/api/users/${user.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ generate_password: true })
+        });
+        this.showNotice(user.username, result.generated_password);
+        await this.load();
+      } catch (error) {
+        this.error = error.message;
+      }
+
+      this.busy = "";
+    },
+
+    async toggleActive(user) {
+      this.busy = "toggle";
+      this.error = "";
+
+      try {
+        await api(`/api/users/${user.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_active: !user.is_active })
+        });
+        await this.load();
+      } catch (error) {
+        this.error = error.message;
+      }
+
+      this.busy = "";
+    },
+
+    async removeUser(user) {
+      if (!confirm(`Delete the user '${user.username}'? This cannot be undone.`)) {
+        return;
+      }
+
+      this.busy = "delete";
+      this.error = "";
+
+      try {
+        await api(`/api/users/${user.id}`, { method: "DELETE" });
+        await this.load();
+      } catch (error) {
+        this.error = error.message;
+      }
+
+      this.busy = "";
+    },
+
+    showNotice(username, password) {
+      this.noticePassword = password;
+      this.notice = `Password for '${username}': ${password} — copy it now, it will not be shown again.`;
+    },
+
+    async copyNoticePassword() {
+      try {
+        await navigator.clipboard.writeText(this.noticePassword);
+        this.notice += " (copied to the clipboard)";
+      } catch (_) {
+        // Clipboard unavailable (e.g. non-secure context) — select manually.
+        this.notice += " (copy it manually)";
+      }
+    },
+
+    formatDate(iso) {
+      if (!iso) {
+        return "never";
+      }
+
+      return iso.replace("T", " ").slice(0, 16).replace(/\+.*$/, "") + " UTC";
     }
   };
 }

@@ -584,3 +584,58 @@ def log_change(config_object, field, old_value, new_value, action, user):
             user=user,
         )
     )
+
+
+class User(db.Model):
+    """Application account for the session-based authentication.
+
+    Stored in a **separate database file** (``instance/users.db``) — the
+    model is bound to the ``users`` database configured in the factory via
+    ``SQLALCHEMY_BINDS`` / ``__bind_key__`` — so the user base can be
+    backed up or replaced independently of the configuration data in
+    ``instance/swissknife.db``.
+
+    Passwords are never stored in plain text: ``set_password``/
+    ``check_password`` use :mod:`werkzeug.security` (``scrypt`` hash with a
+    per-password random salt).
+    """
+
+    __tablename__ = "users"
+    __bind_key__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    display_name = db.Column(db.String(120), nullable=True)
+    password_hash = db.Column(db.String(512), nullable=False)
+    # Disabled users cannot sign in; their data stays in the database.
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        nullable=False,
+    )
+    last_login_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    def set_password(self, password: str):
+        from .auth import hash_password
+
+        self.password_hash = hash_password(password)
+
+    def check_password(self, password: str) -> bool:
+        from .auth import verify_password
+
+        return verify_password(password, self.password_hash)
+
+    def to_dict(self):
+        """Public representation — never includes the password hash."""
+        return {
+            "id": self.id,
+            "username": self.username,
+            "display_name": self.display_name,
+            "is_active": bool(self.is_active),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "last_login_at": self.last_login_at.isoformat() if self.last_login_at else None,
+        }

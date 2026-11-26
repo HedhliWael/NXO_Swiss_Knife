@@ -12,6 +12,56 @@ Chronological log of all modifications to the project. **Newest first.**
 
 ## 2026-11-26
 
+**Real authentication replaces the placeholder: session login with user + password, accounts in a SEPARATE users database (`instance/users.db`), `admin` bootstrapped on first start, and user management (add / reset password / enable-disable / delete) on the dashboard's new Users section — every page and API route is protected:**
+
+- `app/auth.py` (new): the whole authentication layer.
+  - `authenticate()` — looks the user up in the users DB and verifies the hash with `werkzeug.security.check_password_hash`; generic "Invalid username or password" for every failure, **timing equalization** (a real dummy-hash check when the user does not exist, so "unknown user" costs the same as "wrong password"), 0.5 s delay + `logger.warning` with the client IP on failed attempts.
+  - `GET/POST /login` (standalone page), `POST /logout` (POST-only — no forced logout via a plain link), `GET /login` redirects signed-in users to the dashboard; the form carries a hidden `next` field so the original target survives a failed attempt.
+  - `POST /api/auth/login` (JSON, same URL as the old env-var placeholder — now validates against the users DB and sets the same session cookie, so API clients can authenticate programmatically) + `GET /api/auth/me`.
+  - `/api/users` CRUD: `GET` (never returns the hash), `POST` (username 2-64 chars `[A-Za-z0-9._-]` + unique, password min 8 / max 128 or **server-generated and returned once**), `PATCH` (`display_name`, `is_active`, `generate_password` → new random password returned once, or explicit `password`), `DELETE`. Guards: **no deleting or disabling your own account**, and the **last active account** cannot be disabled or deleted.
+  - `before_request` login guard: page routes redirect anonymous browsers to `/login?next=<path>` (relative same-origin only), `/api/*` answers JSON `401`; static files, unknown paths (404) and the login routes stay open.
+  - `ensure_admin_user()`: when the users DB is empty, creates the initial `admin` account — password from `SWISSKNIFE_ADMIN_PASS`, otherwise a random one **printed to the console once** (flushed; stored hashed, not recoverable).
+  - JSON error handlers for the auth/users blueprints (mirroring the ones of `api_bp`).
+- `app/models.py`: new `User` model — `__bind_key__ = "users"` → its own file `instance/users.db` via `SQLALCHEMY_BINDS` (Flask-SQLAlchemy 3.0.5 refuses two `SQLAlchemy()` instances per app, so the bind mechanism is used; the existing `db.create_all()` creates the table there automatically). `set_password`/`check_password` (scrypt + random per-password salt), `is_active`, `last_login_at`, `to_dict()` without the hash.
+- `app/factory.py`: `SQLALCHEMY_BINDS` (`USERS_DATABASE_URL`, default `sqlite:///users.db`), session hardening (HttpOnly, SameSite=Lax, `SWISSKNIFE_SESSION_SECURE` for `Secure`, 8 h lifetime), `ensure_admin_user()` after the migrations, `init_auth(app)` (blueprints + guard).
+- `app/api/routes.py`: `current_user()` now returns the session username (was the Bearer-token/"system" placeholder); the demo `POST /api/auth/login` (env-var comparison) removed — replaced by the same URL in `app/auth.py`.
+- `templates/login.html` (new): standalone sign-in page in the app's design system (brand row, centered card, flash errors, first-start admin hint, `next` preserved).
+- `templates/base.html`: navbar gains the signed-in **user chip** + **Sign out** POST form (outside the `nav` block, so the project pages' navbar shows them too).
+- `templates/index.html`: new fourth section **Users** (Administration) — one `userManagement()` Alpine instance wraps the whole section (the Add user button, the table and the modal share its state); the `x-data` embeds the signed-in username as JSON → single-quoted attribute per the Alpine note in PROJECT.md §2. Table: username (+ "you" badge), display name, active/disabled badge, last login, created, actions; **Add user** modal (password optional → generated, shown **once** in a warning notice with a Copy button); Reset password / Enable / Disable / Delete behind confirms.
+- `static/js/app.js`: new `userManagement(me)` component (list, add, one-shot generated-password notice + clipboard copy, reset/enable-disable/delete via the API).
+- `.gitignore`: + `instance/users.db`.
+
+- Files touched: `app/auth.py` (new), `app/models.py`, `app/factory.py`, `app/api/routes.py`, `templates/login.html` (new), `templates/base.html`, `templates/index.html`, `static/js/app.js`, `.gitignore`, `PROJECT.md` (§1/§2/§3/§5/§6), `CHANGELOG.md`.
+- Verified: background server + 64-check API probe (`QA/_test_auth.py`, 64/64 pass): guards (302 `/login?next=…` on pages, JSON 401 on the API, static + 404s stay open), login (bad/unknown-user → generic 401 + no session; good → 302 + HttpOnly SameSite=Lax cookie + `next` honored; JSON login endpoint), users CRUD (create with explicit/generated password, duplicate/invalid username, short password → 400, list never leaks the hash), new users signing in, self + last-active guards, disable → login blocked → re-enable, password reset (generated + explicit, old password stops working), delete + username reuse, logout (POST only, session gone). Headless browser: login page (failed attempt shows the flash), sign-in → dashboard with the navbar user chip + Sign out, Users section table + **Add user** via the UI (generated-password notice with Copy rendered, new row present), Sign out → back to the login page. Regression: all core pages (`/`, `/projects/3`, objects, firewalls, trash, import, export) 200 for a signed-in session; demo data intact; trashed project 1 correctly 404s. During the round, stale dev servers from earlier sessions (two `flask --debug` pairs, an old `create_app().run` pair, an `http.server 8123` pair) were found holding the DBs and restarted the app on file edits — stopped and cleaned up.
+
+---
+
+## 2026-11-25
+
+**Vector_DB RAG pipeline refactored (chunker v2 + strict token budget): fixes the ~262,411-token prompt overflow — token-accurate Python-aware chunking (400/500 tokens, 0% overlap, tiktoken), context headers, noise exclusion, top-k hard cap (12), chunk deduplication, and a 7,000-token hard budget enforced before every prompt:**
+
+*Root cause of the token explosion (diagnosed on the live store):*
+- The old word-based chunker (`CHUNK_MAX_WORDS=500`) could not bound token size: `split_line()` returned a whole line unchanged when it held ≤500 whitespace-separated "words", so the minified 1.95 MB PAN-OS XML and the FortiGate `.conf` produced **47,568-token chunks**. The store held 1,200 chunks over 500 tokens (401 over 2,000), and a 12-chunk retrieval measured **258,576 tokens** — matching the observed ~262k overflow.
+- No token budget existed at retrieval time (only a chunk-count cap), and 94% of the corpus was the 4 non-source `files/` sample configs (+ QA test logs).
+
+*Changes (all in the companion **Vector_DB** project `C:\Users\hedhl\source\repos\Vector_DB`):*
+- `app/rag/tokens.py` (new): tiktoken (cl100k_base) wrapper — `count_tokens`, `split_tokens` (token-boundary hard split), `truncate_to_tokens` (idempotent boundary cut with marker). All size math uses a real tokenizer instead of character/word counts.
+- `app/rag/config.py`: token-based config — `RAG_CHUNK_TARGET_TOKENS=400` / `RAG_CHUNK_MAX_TOKENS=500` / 0% overlap; `RAG_TOP_K=10` + `MAX_TOP_K=12` hard cap; `RAG_TOKEN_BUDGET=7000`; `CHUNKER_VERSION` stamp per chunk; noise exclusion extended (`QA/`, tool caches, `*.egg`, and non-source data extensions `.json`/`.csv`/`.tsv`/`.db`/`.sqlite`/`.bin`/`.dat`/`.parquet`/`.pyc`/`.so`/`.dll`/`.exe`/`.pdf`/media/logs are never indexed, even via `--ext`); optional `RAG_MAX_FILE_SIZE_BYTES` guard.
+- `app/rag/chunker.py` (rewritten): Python split at **function granularity** via the Tree-sitter AST — every `def`/method stays intact (decorators attached); small classes stay one block, large classes become a definition block + one block per method (`Class.method`, nested classes recurse). Every chunk gets a **context header prepended before embedding** (`# File: app/models.py | Class: Firewall | Function: to_dict`). Greedy packing at 400-token target / 500-token hard cap with 0% overlap; a final token-boundary safety net guarantees **no chunk can ever exceed 500 tokens** (the old unbounded-chunk hole is closed).
+- `app/rag/retrieval.py`: top-k hard-capped at 12; **deduplication** of duplicate/overlapping chunks (exact + containment, best score wins); **strict token budget** enforced right before prompt build (`enforce_token_budget` / `prepare_prompt`) — lowest-scoring chunks dropped until the context fits 7,000 tokens, best chunk truncated if even it alone exceeds the budget; size-damped ranking now token-based.
+- `index_db.py`: prints chunker version + a **CHUNKER UPDATE PENDING** reminder (with the `python index_db.py --rebuild` command) whenever chunks from an older chunker are detected — unchanged files would otherwise keep stale, unbounded chunks (content-hash skip).
+- `rag_query.py`: `--token-budget` option, per-chunk token counts + `context N / 7,000 tokens` line in the output.
+- `app/api/rag.py`: `n_results` clamped to 12, `token_budget` request parameter, response now reports `context_tokens` + `chunks_dropped_for_budget`.
+- `requirements.txt`: + `tiktoken>=0.7.0` (installed in the Vector_DB venv).
+- **Wipe & re-index executed** (`python index_db.py --rebuild`): the store now holds 2,594 chunks from 36 files — **0 chunks over 500 tokens** (was 1,200), worst-case 12-chunk context is 6,000 tokens (was 258,576); QA/ logs are no longer indexed.
+
+- Files touched (Vector_DB): `app/rag/tokens.py` (new), `app/rag/config.py`, `app/rag/chunker.py`, `app/rag/retrieval.py`, `app/rag/store.py`, `app/api/rag.py`, `index_db.py`, `rag_query.py`, `requirements.txt`, `README.md` (chunking/retrieval/config docs + new §2.1 wipe & re-index); (this repo): `PROJECT.md` §7, `CHANGELOG.md`.
+- Verified: chunker smoke test on the real corpus — every chunk ≤500 tokens on all file types (incl. the 1.95 MB one-line minified XML, the 778 KB FortiGate `.conf` and the 2.5 MB PAN-OS set format); Python function-level blocks confirmed (`Firewall.to_dict`, `PaloAltoParser._parse_xml` … intact, headers correct); budget unit checks (drop + truncation paths hold the budget exactly); live queries through Ollama: `"How does the trash permanent delete work?"` → 10 chunks, **4,429/7,000 tokens**; config-file query → 5,088/7,000; HTTP API: `n_results: 99` clamped to 12, `token_budget: 1500` → 1,082 tokens + 7 dropped, `/api/rag/status` healthy (2,594 chunks / 36 files).
+
+---
+
+## 2026-11-26
+
 **Object trash (project trash can): permanent delete with row selection + delete-all, and the search filter actually shows the objects — and the import wizard's review step gets a "Back to project" button instead of "Import again":**
 
 *Bug fix — the project trash can's object table rendered no rows at all (`static/js/app.js`):*

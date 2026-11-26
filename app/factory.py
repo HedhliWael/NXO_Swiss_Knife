@@ -1,7 +1,9 @@
 import os
+from datetime import timedelta
 
 from flask import Flask
 
+from .auth import ensure_admin_user, init_auth
 from .extensions import db
 
 
@@ -440,8 +442,20 @@ def create_app():
         "DATABASE_URL",
         "sqlite:///swissknife.db",
     )
+    # Authentication accounts live in a SEPARATE database file
+    # (instance/users.db) — the User model is bound to this engine
+    # (__bind_key__ = "users"); db.create_all() creates both sets of tables.
+    app.config["SQLALCHEMY_BINDS"] = {
+        "users": os.getenv("USERS_DATABASE_URL", "sqlite:///users.db"),
+    }
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+
+    # Session cookie hardening (login session — see app/auth.py).
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = os.getenv("SWISSKNIFE_SESSION_SECURE", "0") == "1"
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=8)
 
     # Cache busting: browsers keep static/js/app.js for Flask's default
     # static max-age (12 h). The base template renders the script tag with
@@ -457,7 +471,8 @@ def create_app():
     from .views import views_bp
 
     # Models are registered in the metadata when they are imported above,
-    # so create tables after that point.
+    # so create tables after that point (both the main database and the
+    # separate "users" database of the User model).
     with app.app_context():
         db.create_all()
         _ensure_config_objects_import_id()
@@ -467,8 +482,13 @@ def create_app():
         _ensure_config_objects_export_included()
         _ensure_project_firewall_soft_delete_columns()
         _ensure_trash_multi_type()
+        # First start: create the initial admin account (separate users db).
+        ensure_admin_user()
 
     app.register_blueprint(api_bp)
     app.register_blueprint(views_bp)
+    # Auth blueprints (/login, /logout, /api/auth, /api/users) + the
+    # before_app_request guard that protects every other route.
+    init_auth(app)
 
     return app
