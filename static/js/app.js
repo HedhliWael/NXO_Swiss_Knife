@@ -80,6 +80,116 @@ async function readNdjson(response, onData) {
 
 
 // ---------------------------------------------------------------------------
+// Shared feedback — confirmation dialog + notification stack
+// (styled replacements for the browser's confirm() and alert()).
+// Both are mounted once per page in templates/base.html and registered
+// on window (nxoConfirm / nxoNotify), so every Alpine component can use
+// them without coupling to each other.
+// ---------------------------------------------------------------------------
+
+// Confirmation dialog. ask() returns a Promise<boolean> resolved by the
+// dialog's buttons; Escape or a click on the overlay counts as a cancel
+// (the cancel button is focused on open, so Enter never confirms).
+// Requests made while a dialog is already open are queued and answered
+// in order, so a dialog can never be lost.
+function confirmHost() {
+  return {
+    open: false,
+    title: "",
+    message: "",
+    confirmLabel: "Confirm",
+    danger: false,
+    current: null,
+    queue: [],
+
+    ask(options = {}) {
+      const item = {
+        title: options.title || "Please confirm",
+        message: options.message || "",
+        confirmLabel: options.confirmLabel || "Confirm",
+        danger: !!options.danger,
+        resolve: null
+      };
+
+      return new Promise((resolve) => {
+        item.resolve = resolve;
+
+        if (this.open) {
+          this.queue.push(item);
+          return;
+        }
+
+        this.present(item);
+      });
+    },
+
+    present(item) {
+      this.current = item;
+      this.title = item.title;
+      this.message = item.message;
+      this.confirmLabel = item.confirmLabel;
+      this.danger = item.danger;
+      this.open = true;
+
+      this.$nextTick(() => {
+        if (this.$refs.cancelBtn) {
+          this.$refs.cancelBtn.focus();
+        }
+      });
+    },
+
+    answer(confirmed) {
+      const item = this.current;
+      this.open = false;
+      this.current = null;
+      if (item) {
+        item.resolve(confirmed);
+      }
+
+      const next = this.queue.shift();
+      if (next) {
+        this.present(next);
+      }
+    }
+  };
+}
+
+// Notification stack. notify(message, variant, timeout) pushes a flash-
+// styled toast (success / error / warning / info) bottom-right, which
+// dismisses itself or via its close button.
+function toastHost() {
+  return {
+    toasts: [],
+    seq: 0,
+
+    notify(message, variant = "info", timeout = 5000) {
+      const id = ++this.seq;
+      const safeVariant = ["success", "error", "warning", "info"].includes(variant)
+        ? variant
+        : "info";
+      this.toasts.push({ id, message, variant: safeVariant });
+
+      if (timeout > 0) {
+        setTimeout(() => this.dismiss(id), timeout);
+      }
+
+      // Keep the stack readable: at most four toasts at a time.
+      while (this.toasts.length > 4) {
+        this.dismiss(this.toasts[0].id);
+      }
+    },
+
+    dismiss(id) {
+      const index = this.toasts.findIndex((toast) => toast.id === id);
+      if (index > -1) {
+        this.toasts.splice(index, 1);
+      }
+    }
+  };
+}
+
+
+// ---------------------------------------------------------------------------
 // Dashboard (projects + firewalls, hosts both creation wizards)
 // ---------------------------------------------------------------------------
 
@@ -131,6 +241,12 @@ function dashboard() {
         this.error = error.message;
       }
     },
+    // "Total Objects" stat card: sum of the per-firewall active object
+    // counts from GET /api/firewalls (the list only carries active
+    // firewalls, so this is the environment-wide active object total).
+    totalObjects() {
+      return this.firewalls.reduce((sum, fw) => sum + (fw.objects_count || 0), 0);
+    },
 
     // Shared delete handler. The server commits the delete and then answers
     // with a 302 redirect; following it (default fetch behavior) lands on the
@@ -149,7 +265,7 @@ function dashboard() {
 
         await this.reloadAll();
       } catch (error) {
-        alert(error.message);
+        nxoNotify(error.message, "error");
       }
     },
 
@@ -162,16 +278,28 @@ function dashboard() {
       });
     },
 
-    confirmDeleteProject(project) {
-      if (!confirm(`Move project "${project.name}" (with its firewalls and objects) to the trash?`)) {
+    async confirmDeleteProject(project) {
+      const ok = await nxoConfirm({
+        title: "Move to trash",
+        message: `Move project "${project.name}" (with its firewalls and objects) to the trash?`,
+        confirmLabel: "Move to trash",
+        danger: true
+      });
+      if (!ok) {
         return;
       }
 
       this.deleteEntity(`/projects/${project.id}/delete`, `project "${project.name}"`);
     },
 
-    confirmDeleteFirewall(firewall) {
-      if (!confirm(`Move firewall "${firewall.name}" (with its objects) to the trash?`)) {
+    async confirmDeleteFirewall(firewall) {
+      const ok = await nxoConfirm({
+        title: "Move to trash",
+        message: `Move firewall "${firewall.name}" (with its objects) to the trash?`,
+        confirmLabel: "Move to trash",
+        danger: true
+      });
+      if (!ok) {
         return;
       }
 
@@ -227,8 +355,14 @@ function firewallDashboard() {
       });
     },
 
-    confirmDelete(firewall) {
-      if (!confirm(`Move firewall "${firewall.name}" (with its objects) to the trash?`)) {
+    async confirmDelete(firewall) {
+      const ok = await nxoConfirm({
+        title: "Move to trash",
+        message: `Move firewall "${firewall.name}" (with its objects) to the trash?`,
+        confirmLabel: "Move to trash",
+        danger: true
+      });
+      if (!ok) {
         return;
       }
 
@@ -250,7 +384,7 @@ function firewallDashboard() {
 
         await this.reloadFirewalls();
       } catch (error) {
-        alert(error.message);
+        nxoNotify(error.message, "error");
       }
     }
   };
@@ -997,13 +1131,13 @@ function objectTable(columns) {
 
     openEdit(row) {
       if (row.is_deleted) {
-        alert(`"${row.name}" is in the trash. Restore it first to modify it.`);
+        nxoNotify(`"${row.name}" is in the trash. Restore it first to modify it.`, "warning");
         return;
       }
 
       const staged = this.pendingFor(row.id);
       if (staged && staged.op === "delete") {
-        alert("This object is staged for deletion. Discard the deletion first.");
+        nxoNotify("This object is staged for deletion. Discard the deletion first.", "warning");
         return;
       }
 
@@ -1097,12 +1231,12 @@ function objectTable(columns) {
       try {
         payload = JSON.parse(this.modal.payloadText);
       } catch (_) {
-        alert("Payload JSON must be valid JSON before re-syncing the fields.");
+        nxoNotify("Payload JSON must be valid JSON before re-syncing the fields.", "error");
         return;
       }
 
       if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-        alert("Payload must be a JSON object.");
+        nxoNotify("Payload must be a JSON object.", "error");
         return;
       }
 
@@ -1137,24 +1271,24 @@ function objectTable(columns) {
       try {
         payload = JSON.parse(this.modal.payloadText);
       } catch (_) {
-        alert("Payload JSON must be valid JSON.");
+        nxoNotify("Payload JSON must be valid JSON.", "error");
         return;
       }
 
       if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-        alert("Payload must be a JSON object.");
+        nxoNotify("Payload must be a JSON object.", "error");
         return;
       }
 
       try {
         this.applyPayloadFields(payload);
       } catch (error) {
-        alert(`Invalid payload field: ${error.message}`);
+        nxoNotify(`Invalid payload field: ${error.message}`, "error");
         return;
       }
 
       if (!this.modal.name.trim()) {
-        alert("Name is required.");
+        nxoNotify("Name is required.", "error");
         return;
       }
 
@@ -1210,17 +1344,23 @@ function objectTable(columns) {
       }
     },
 
-    stageDeleteFromRow(row) {
+    async stageDeleteFromRow(row) {
       if (row.is_deleted) {
         return;
       }
 
       if (this.pendingFor(row.id)) {
-        alert("This object already has a staged change. Discard it first.");
+        nxoNotify("This object already has a staged change. Discard it first.", "warning");
         return;
       }
 
-      if (!confirm(`Move "${row.name}" to the trash (staged — commit with Validate)?`)) {
+      const ok = await nxoConfirm({
+        title: "Move to trash",
+        message: `Move "${row.name}" to the trash (staged — commit with Validate)?`,
+        confirmLabel: "Move to trash",
+        danger: true
+      });
+      if (!ok) {
         return;
       }
 
@@ -1230,7 +1370,12 @@ function objectTable(columns) {
     // Direct restore of a deleted row (POST /api/objects/<id>/restore) —
     // no staging: the row goes back to the active list immediately.
     async restoreRow(row) {
-      if (!confirm(`Restore "${row.name}"?`)) {
+      const ok = await nxoConfirm({
+        title: "Restore object",
+        message: `Restore "${row.name}"?`,
+        confirmLabel: "Restore"
+      });
+      if (!ok) {
         return;
       }
 
@@ -1254,8 +1399,9 @@ function objectTable(columns) {
 
     openAdd() {
       if (!this.scope.firewall_id) {
-        alert(
-          "Objects are added per firewall. Open this page from a project or firewall to add objects."
+        nxoNotify(
+          "Objects are added per firewall. Open this page from a project or firewall to add objects.",
+          "info"
         );
         return;
       }
@@ -1277,12 +1423,12 @@ function objectTable(columns) {
       try {
         payload = JSON.parse(this.addPayloadText);
       } catch (_) {
-        alert("Payload must be valid JSON.");
+        nxoNotify("Payload must be valid JSON.", "error");
         return;
       }
 
       if (!this.addName.trim()) {
-        alert("Name is required.");
+        nxoNotify("Name is required.", "error");
         return;
       }
 
@@ -1300,8 +1446,13 @@ function objectTable(columns) {
       this.closeAdd();
     },
 
-    discard() {
-      if (!confirm("Discard all staged changes?")) {
+    async discard() {
+      const ok = await nxoConfirm({
+        title: "Discard staged changes",
+        message: "Discard all staged changes? They will not be committed.",
+        confirmLabel: "Discard"
+      });
+      if (!ok) {
         return;
       }
       this.pending = [];
@@ -1866,7 +2017,12 @@ function trashBin(projectId) {
     // kind = "project" | "firewall" | "object" — used to disable every
     // Restore button while one restore is in flight.
     async restore(kind, trashId, label) {
-      if (!confirm(`Restore ${label}?`)) {
+      const ok = await nxoConfirm({
+        title: "Restore",
+        message: `Restore ${label}?`,
+        confirmLabel: "Restore"
+      });
+      if (!ok) {
         return;
       }
 
@@ -1876,7 +2032,7 @@ function trashBin(projectId) {
         await api(`/api/trash/${trashId}/restore`, { method: "POST" });
         location.reload();
       } catch (error) {
-        alert(error.message);
+        nxoNotify(error.message, "error");
         this.busy = "";
       }
     },
@@ -1929,11 +2085,13 @@ function trashBin(projectId) {
         return;
       }
 
-      if (
-        !confirm(
-          `Permanently delete ${count} object${count > 1 ? "s" : ""} from the trash? Their modification history goes with them. This cannot be undone.`
-        )
-      ) {
+      const ok = await nxoConfirm({
+        title: "Permanently delete",
+        message: `Permanently delete ${count} object${count > 1 ? "s" : ""} from the trash? Their modification history goes with them. This cannot be undone.`,
+        confirmLabel: "Delete permanently",
+        danger: true
+      });
+      if (!ok) {
         return;
       }
 
@@ -1947,7 +2105,7 @@ function trashBin(projectId) {
         });
         location.reload();
       } catch (error) {
-        alert(error.message);
+        nxoNotify(error.message, "error");
         this.busy = "";
       }
     },
@@ -1961,11 +2119,13 @@ function trashBin(projectId) {
         return;
       }
 
-      if (
-        !confirm(
-          `Permanently delete ALL ${count} objects in the trash of this project? Their modification history goes with them. This cannot be undone.`
-        )
-      ) {
+      const ok = await nxoConfirm({
+        title: "Permanently delete all",
+        message: `Permanently delete ALL ${count} objects in the trash of this project? Their modification history goes with them. This cannot be undone.`,
+        confirmLabel: "Delete permanently",
+        danger: true
+      });
+      if (!ok) {
         return;
       }
 
@@ -1979,7 +2139,7 @@ function trashBin(projectId) {
         });
         location.reload();
       } catch (error) {
-        alert(error.message);
+        nxoNotify(error.message, "error");
         this.busy = "";
       }
     }
@@ -2053,11 +2213,12 @@ function userManagement(me) {
     },
 
     async resetPassword(user) {
-      if (
-        !confirm(
-          `Reset the password of '${user.username}'? A new password is generated and shown once.`
-        )
-      ) {
+      const ok = await nxoConfirm({
+        title: "Reset password",
+        message: `Reset the password of '${user.username}'? A new password is generated and shown once.`,
+        confirmLabel: "Reset password"
+      });
+      if (!ok) {
         return;
       }
 
@@ -2098,7 +2259,13 @@ function userManagement(me) {
     },
 
     async removeUser(user) {
-      if (!confirm(`Delete the user '${user.username}'? This cannot be undone.`)) {
+      const ok = await nxoConfirm({
+        title: "Delete user",
+        message: `Delete the user '${user.username}'? This cannot be undone.`,
+        confirmLabel: "Delete user",
+        danger: true
+      });
+      if (!ok) {
         return;
       }
 

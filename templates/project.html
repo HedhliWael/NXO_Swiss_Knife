@@ -269,14 +269,42 @@
                                 <div style="display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem;">
                                     <a href="{{ url_for('views.import_page', firewall_id=fw.id, project_id=project.id) }}" class="link" style="font-size: 0.8125rem;">Import</a>
                                     <a href="{{ url_for('views.objects_page', project_id=project.id, firewall_id=fw.id) }}" class="link" style="font-size: 0.8125rem;">Objects</a>
-                                    <form
-                                        method="POST"
-                                        action="{{ url_for('views.remove_project_firewall', project_id=project.id, firewall_id=fw.id) }}"
-                                        style="display: inline;"
-                                        onsubmit="return confirm('Remove {{ fw.name }} from this project?')"
+                                    <button
+                                        type="button"
+                                        class="btn btn-ghost btn-xs"
+                                        style="color: #dc2626;"
+                                        x-data='{
+                                            fwName: {{ fw.name|tojson }},
+                                            removing: false,
+                                            async remove() {
+                                                if (this.removing) return;
+                                                const ok = await nxoConfirm({
+                                                    title: "Remove firewall",
+                                                    message: `Remove "${this.fwName}" from this project? The firewall and its objects stay in place.`,
+                                                    confirmLabel: "Remove"
+                                                });
+                                                if (!ok) return;
+                                                this.removing = true;
+                                                try {
+                                                    const response = await fetch("{{ url_for('views.remove_project_firewall', project_id=project.id, firewall_id=fw.id) }}", { method: "POST" });
+                                                    if (!response.ok) {
+                                                        nxoNotify("Could not remove the firewall.", "error");
+                                                        return;
+                                                    }
+                                                    location.reload();
+                                                } catch (error) {
+                                                    nxoNotify(error.message, "error");
+                                                } finally {
+                                                    this.removing = false;
+                                                }
+                                            }
+                                        }'
+                                        :disabled="removing"
+                                        @click="remove()"
                                     >
-                                        <button type="submit" class="btn btn-ghost btn-xs" style="color: #dc2626;">Remove</button>
-                                    </form>
+                                        <span x-show="!removing">Remove</span>
+                                        <span x-show="removing">Removing…</span>
+                                    </button>
                                 </div>
                             </td>
                         </tr>

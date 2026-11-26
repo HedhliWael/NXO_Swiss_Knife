@@ -201,6 +201,8 @@
         }
         .btn-accent { background: #d97706; color: white; border-color: #d97706; }
         .btn-accent:hover { background: #b45309; }
+        .btn-danger-solid { background: #dc2626; color: white; border-color: #dc2626; }
+        .btn-danger-solid:hover { background: #b91c1c; border-color: #b91c1c; }
         .btn-sm { padding: 0.25rem 0.75rem; font-size: 0.8125rem; }
         .btn-xs { padding: 0.125rem 0.5rem; font-size: 0.75rem; }
 
@@ -291,6 +293,51 @@
         .flash-warning::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d97706' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z'/%3E%3Cline x1='12' y1='9' x2='12' y2='13'/%3E%3Cline x1='12' y1='17' x2='12.01' y2='17'/%3E%3C/svg%3E"); }
         .flash-info { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; border-left-color: #2563eb; }
         .flash-info::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cline x1='12' y1='16' x2='12' y2='12'/%3E%3Cline x1='12' y1='8' x2='12.01' y2='8'/%3E%3C/svg%3E"); }
+
+        /* Notification stack — the global, styled replacement for alert().
+           Reuses the .flash variants (icon + accent bar + soft tint); the
+           stack sits bottom-right, above the page content (z 200 > modal z 100). */
+        .toast-stack {
+            position: fixed; right: 1.5rem; bottom: 1.5rem; z-index: 200;
+            display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem;
+            width: min(26rem, calc(100vw - 3rem)); pointer-events: none;
+        }
+        .toast { position: relative; pointer-events: auto; animation: toastIn 180ms var(--motion-ease); }
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .toast-close {
+            position: absolute; top: 0.4375rem; right: 0.5625rem;
+            display: grid; place-items: center; width: 1.5rem; height: 1.5rem;
+            border: 0; background: none; cursor: pointer; border-radius: var(--radius-sm);
+            color: inherit; opacity: 0.55;
+            transition: opacity var(--motion-duration), background var(--motion-duration);
+        }
+        .toast-close:hover { opacity: 1; background: rgb(0 0 0 / 0.08); }
+        @media (prefers-reduced-motion: reduce) {
+            .toast { animation: none; }
+        }
+
+        /* Confirmation dialog — the global, styled replacement for confirm().
+           Reuses the .modal-overlay / .modal-content surface; the icon tile
+           mirrors the stat-icon language (tinted square + 24px stroke icon),
+           red for destructive actions, accent blue otherwise. */
+        .confirm-content { max-width: 24rem; }
+        .confirm-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.875rem; }
+        .confirm-icon {
+            width: 2.25rem; height: 2.25rem; display: grid; place-items: center; flex-shrink: 0;
+            border-radius: var(--radius-md);
+            background: var(--color-accent-light); color: var(--color-accent);
+            border: 1px solid rgb(29 78 216 / 0.15);
+        }
+        .confirm-icon-danger {
+            background: #fef2f2; color: #dc2626;
+            border-color: rgb(220 38 38 / 0.15);
+        }
+        .confirm-title { font-size: 1.125rem; font-weight: 600; letter-spacing: -0.01em; color: var(--color-ink); margin: 0; }
+        .confirm-message { font-size: 0.875rem; line-height: 1.6; color: var(--color-ink-muted); margin: 0 0 1.25rem; overflow-wrap: anywhere; }
+        .confirm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
 
         /* Modal */
         .modal-overlay {
@@ -386,7 +433,22 @@
     </style>
 
     <script src="{{ url_for('static', filename='js/app.js') }}?v={{ app_version }}" defer></script>
-    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <!-- Alpine is pinned to a verified version: @3.x.x floats to the latest
+         3.x, and Alpine 3.17.5 changed `this` inside x-init from the
+         component proxy to window, which silently broke the nxoConfirm /
+         nxoNotify bindings below ("this.ask is not a function"). -->
+    <script src="https://unpkg.com/alpinejs@3.17.5/dist/cdn.min.js" defer></script>
+    <!-- bfcache sync: a page restored via the browser back/forward button
+         (e.g. back to a project or the dashboard from the trash) would keep
+         its old rendered content — on a persisted pageshow, reload so the
+         page re-syncs with the server state. -->
+    <script>
+        window.addEventListener("pageshow", (event) => {
+            if (event.persisted) {
+                location.reload();
+            }
+        });
+    </script>
 </head>
 <body>
     <header class="site-header">
@@ -439,5 +501,75 @@
             NXO Swiss Knife — Firewall Configuration Management
         </div>
     </footer>
+
+    <!-- Global confirmation dialog (styled replacement for confirm()) —
+         mounted once per page; every Alpine component calls
+         window.nxoConfirm({ title, message, confirmLabel, danger }) and
+         awaits a true/false answer. Escape or an overlay click cancels; the
+         Cancel button is focused on open so Enter never confirms.
+          Two Alpine 3.17.5 constraints on the x-init binding:
+          1. `this` inside x-init is window, not the component proxy — so
+             ask() must be called as a bare identifier (this.ask would look
+             up window.ask and fail).
+          2. x-init expressions that evaluate to a function are invoked by
+             Alpine once, with no arguments — an inline
+             `window.nxoConfirm = (options) => ask(options)` would therefore
+             call ask() at page load (phantom dialog). The binding is
+             wrapped in an IIFE that returns null so nothing is invoked. -->
+    <div
+        x-data="confirmHost()"
+        x-init="(function () { window.nxoConfirm = (options) => ask(options); return null; })()"
+        x-show="open"
+        class="modal-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        @click.self="answer(false)"
+        @keydown.escape.prevent.stop="answer(false)"
+    >
+        <div class="modal-content confirm-content">
+            <div class="confirm-head">
+                <span class="confirm-icon" :class="danger ? 'confirm-icon-danger' : ''">
+                    <svg x-show="danger" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.3 4.2 2.4 18a1 1 0 0 0 1.7 1h15.8a1 1 0 0 0 1.7-1L13.7 4.2a1 1 0 0 0-1.7 0Z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    <svg x-show="!danger" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="16" x2="12" y2="12"/>
+                        <line x1="12" y1="8" x2="12.01" y2="8"/>
+                    </svg>
+                </span>
+                <h2 class="confirm-title" id="confirm-title" x-text="title"></h2>
+            </div>
+            <p class="confirm-message" x-text="message"></p>
+            <div class="confirm-actions">
+                <button type="button" class="btn btn-secondary" x-ref="cancelBtn" @click="answer(false)">Cancel</button>
+                <button type="button" :class="danger ? 'btn btn-danger-solid' : 'btn btn-primary'" @click="answer(true)" x-text="confirmLabel"></button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Global notification stack (styled replacement for alert()) —
+         every Alpine component calls window.nxoNotify(message, variant)
+         and gets a flash-styled toast, bottom-right, self-dismissing.
+          Same IIFE + bare-identifier rules as the confirm host above. -->
+    <div
+        x-data="toastHost()"
+        x-init="(function () { window.nxoNotify = (message, variant, timeout) => notify(message, variant, timeout); return null; })()"
+        class="toast-stack"
+        role="status"
+        aria-live="polite"
+    >
+        <template x-for="toast in toasts" :key="`toast-${toast.id}`">
+            <div :class="`toast flash flash-${toast.variant}`">
+                <span x-text="toast.message"></span>
+                <button type="button" class="toast-close" aria-label="Dismiss notification" @click="dismiss(toast.id)">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </template>
+    </div>
 </body>
 </html>

@@ -93,7 +93,7 @@ Core capabilities:
 | ORM / DB | Flask-SQLAlchemy 3.0.5, SQLAlchemy 2.1.9, SQLite — main DB `instance/swissknife.db` **+ separate users DB `instance/users.db`** (the `User` model, bound via `SQLALCHEMY_BINDS`/`__bind_key__`) |
 | Auth | Flask session login (`app/auth.py`); passwords hashed with `werkzeug.security` (scrypt + per-password salt) |
 | Forms / CSRF | Flask-WTF 1.1.1, WTForms 3.0.1 |
-| Frontend JS | Alpine.js (CDN, v3) |
+| Frontend JS | Alpine.js (CDN, **pinned to v3.17.5** — the floating `@3.x.x` URL silently broke the confirm/toast `x-init` bindings when it resolved to 3.17.5; see design notes) |
 | Styling | Tailwind CSS (CDN build — dev only) |
 | Misc | python-dotenv, requests |
 | Companion RAG project | **Vector_DB** (sibling repo `C:\Users\hedhl\source\repos\Vector_DB`) — ChromaDB + Ollama `nomic-embed-text`, token-efficient context retrieval; see [§7](#7-vector-db-integration-token-efficient-development) |
@@ -170,8 +170,16 @@ NXO_Swiss_Knife/
 │   │                       #   `.section-sub`; `.page-hero`) + alert system
 │   │                       #   (`.flash` success/error/warning/info: per-variant SVG
 │   │                       #   icon via ::before + 4px left accent bar + soft tint)
-│   │                       #   + scripts (app.js BEFORE Alpine, loaded with a
-│   │                       #   ?v= cache-buster — Jinja global `app_version` = app.js mtime)
+│   │                       #   + scripts (app.js BEFORE Alpine — Alpine pinned to 3.17.5,
+│   │                       #   loaded with a ?v= cache-buster — Jinja global
+│   │                       #   `app_version` = app.js mtime) + the global
+│   │                       #   confirmation dialog + notification stack
+│   │                       #   (window.nxoConfirm / window.nxoNotify — styled
+│   │                       #   replacements for confirm()/alert(); host divs here,
+│   │                       #   logic in app.js confirmHost()/toastHost()) + a
+│   │                       #   bfcache pageshow→reload script so pages restored
+│   │                       #   via the browser back/forward button re-sync with
+│   │                       #   the server
 │   ├── login.html          # Standalone login page (own minimal copy of the design
 │   │                       #   tokens; username/password form with a hidden `next`
 │   │                       #   field, generic error flash, first-start admin hint)
@@ -261,13 +269,17 @@ NXO_Swiss_Knife/
 │   ├── MT-FGTVYV324082026.xml                       # Palo Alto (PAN-OS 11.1) XML device export, minified (1.95 MB)
 │   ├── MT-FGTVYV324082026-pretty.xml                # same export, pretty-printed (3.84 MB)
 │   └── MT-FGTVYV324082026-set.txt                   # same config, set (show) format export (2.54 MB)
-├── static/js/app.js        # Alpine components: dashboard, firewallDashboard, projectWizard,
-│   │                       #   firewallWizard, firewallEdit, objectTable, exportWizard,
-│   │                       #   importWizard (origin-aware Back, Select all / Clear,
+├── static/js/app.js        # Alpine components: dashboard (incl. totalObjects() for
+│   │                       #   the "Total Objects" stat card), firewallDashboard,
+│   │                       #   projectWizard, firewallWizard, firewallEdit, objectTable,
+│   │                       #   exportWizard, importWizard (origin-aware Back, Select all / Clear,
 │   │                       #   import history), trashBin (object-trash search),
 │   │                       #   userManagement (dashboard Users section: list, add user
 │   │                       #   modal, one-shot generated-password notice with copy,
-│   │                       #   reset password / enable-disable / delete)
+│   │                       #   reset password / enable-disable / delete),
+│   │                       #   confirmHost + toastHost (global confirmation dialog +
+│   │                       #   toast stack registered on window.nxoConfirm /
+│   │                       #   window.nxoNotify)
 ├── instance/swissknife.db  # SQLite database (tables auto-created + migrated at startup)
 ├── instance/users.db       # SEPARATE SQLite database for the authentication accounts
 │   │                       #   (User model via SQLALCHEMY_BINDS "users"; gitignored)
@@ -307,6 +319,22 @@ Key design notes:
   the component (root cause of the 2026-11-24 edit-form bug). Bindings inside
   components must also short-circuit optional state (`connResult && …`),
   because Alpine evaluates `x-show` / `x-text` even on hidden elements.
+- **Alpine is pinned to 3.17.5** (`unpkg.com/alpinejs@3.17.5/…`): the floating
+  `@3.x.x` URL resolved to 3.17.5, which changed two `x-init` behaviors and
+  silently broke the confirm/toast host bindings (root cause of the
+  2026-11-26 dead delete/modify/restore buttons) — (1) `this` inside `x-init`
+  is **window**, not the component proxy (a `this.ask(options)` binding looked
+  up `window.ask` and failed), and (2) an `x-init` expression whose value is
+  a **function is invoked once with no arguments** (an inline
+  `window.nxoConfirm = (options) => ask(options)` therefore called `ask()` on
+  every page load — phantom dialog with default content, real requests queued
+  behind it). The hosts therefore bind with
+  `x-init="(function () { window.nxoConfirm = (options) => ask(options); return null; })()"`:
+  the IIFE returns `null` (nothing is auto-invoked) and `ask` / `notify` are
+  **bare identifiers**, which still resolve through the component scope with
+  the proxy as implicit `this` (so `$nextTick` / `$refs` keep working inside
+  `ask()`). Keep the pin when upgrading Alpine, and re-verify `x-init`
+  semantics after any bump.
 - **The users database is a separate file** (`instance/users.db`): Flask-SQLAlchemy
   3.0.5 refuses two `SQLAlchemy()` instances on one app, so the `User` model
   uses the same `db` extension with `__bind_key__ = "users"` +
@@ -459,6 +487,8 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned.
 | Streaming import with progress | `POST /api/import/stream` | NDJSON progress events (connect/download/parse/import); used by the firewall wizard for REST sources |
 | Connectivity check | `POST /api/connectivity` | TCP :443 + vendor API probe (Fortinet `/api?uuid=`, PAN-OS `/api/?type=op`), self-signed TLS handled, used by the firewall wizard and the export push step |
 | Trash + restore + permanent delete (objects, firewalls, projects) | `trash_page`, `trash.html`, `/api/trash` + `/api/trash/<id>/restore` + `/api/objects/<id>/restore` + `POST /api/trash/permanent-delete`, `Trash`/`Project`/`Firewall`/`ConfigObject` models, `trashBin()` | Deleted **projects and firewalls** are soft-deleted (cascading into the trash with their firewalls/objects) and restorable; the trash is **separated by level** — the **dashboard trash** (`/trash`, navbar link) lists the entries **per type** (Projects / Firewalls sections, each with counts, deleted date/reason and a Restore button) and each project's **trash can** (`GET /api/trash?project_id=N`, the trash-can icon on the project page) lists **that project's deleted objects** only — **every** deleted object is displayed (the **search box** filters them client-side by name / type / firewall / project / reason, "no match" empty state) plus **permanent delete**: row checkboxes (header checkbox = all visible rows) + **Delete selected (N)** / **Delete all (N)** buttons behind a `confirm()` → the object, its modification history and its trash row are removed from the database (name freed, no restore possible); restoring a project/firewall restores its descendants; a name stays reserved while its project/firewall entry is in the trash (trash-aware error on create/rename) |
+| Global styled confirm dialog + toast stack (replacement for confirm() / alert()) | `templates/base.html` (host divs + `.confirm-content` / `.toast-stack` styles), `confirmHost()` + `toastHost()` in `static/js/app.js` | Mounted once per page; every Alpine component calls `window.nxoConfirm({ title, message, confirmLabel, danger })` (returns `Promise<boolean>`; requests made while a dialog is open are **queued and answered in order**; Escape / overlay click cancel; the Cancel button is focused on open so Enter never confirms) or `window.nxoNotify(message, variant, timeout)` (flash-styled toast bottom-right, max 4, auto-dismissing) — used by dashboard/firewall deletes, object modify/discard/delete/restore, trash restore + permanent delete, the project-page Remove-firewall button and user management. The `x-init` bindings respect the Alpine 3.17.5 constraints documented in [§2 design notes](#2-architecture--layout) (IIFE returning `null` + bare-identifier calls, pinned Alpine version) |
+| Page content sync on browser back/forward (bfcache) | `templates/base.html` (`pageshow` listener in `<head>`) | A page restored from the browser back/forward cache (e.g. back to a project or the dashboard from the trash) would otherwise keep its stale rendered state; on a `pageshow` with `event.persisted`, the page reloads so the content re-syncs with the server |
 | REST API + error handlers | `app/api/routes.py`, `errors.py` | Projects (+`firewall_ids` attach), firewalls (+detail/update `GET/POST/PATCH /api/firewalls/<id>`), import (+stream), objects (GET/POST/commit), trash, export (file/push), connectivity; `current_user()` now returns the signed-in session username |
 | **Authentication (local user accounts, separate users DB)** | `app/auth.py`, `User` model in `app/models.py` (`__bind_key__="users"` → `instance/users.db` via `SQLALCHEMY_BINDS`), `templates/login.html`, `/login` + `/logout` + `/api/auth/login` (JSON) + `/api/auth/me` + `/api/users` (list / create / PATCH display_name·is_active·generate_password·password / DELETE), `ensure_admin_user()` in the factory, `userManagement()` in app.js, the dashboard's **Users** section | **Session login with user + password** for every page and API route (pages → `/login?next=…` redirect, the original page is restored after signing in; API → JSON 401; static files + 404s + the login routes stay open). Best practices applied: passwords hashed with `werkzeug.security` (scrypt + random per-password salt, never stored/computed in plain text), generic "Invalid username or password" answer, **timing equalization** (a dummy hash check when the user does not exist), 0.5 s delay + log line on failed logins, HttpOnly + SameSite=Lax session cookie, 8 h session lifetime, session cleared before the login is stored (no fixation), `next` validated to a relative same-origin path, logout POST-only (no forced-logout via link), username validated (2-64 chars `[A-Za-z0-9._-]`, unique), password 8-128 chars, the user list never returns the hash. **First start bootstraps the `admin` account** (name `SWISSKNIFE_ADMIN_USER`, password `SWISSKNIFE_ADMIN_PASS` or a random one **printed once** to the console). **User management on the dashboard** (Users section, `userManagement()`): account table (username + "you" badge, display name, active/disabled badge, last login, created) + **Add user** modal (password optional → server-generated, shown **once** in a warning notice with a copy button) + per-row **Reset password** (generated, shown once) / **Enable / Disable** / **Delete** behind confirms; guards: no deleting or disabling **your own** account, and the **last active account** can neither be disabled nor deleted (defense in depth). Navbar shows the signed-in username + **Sign out** on every page; the login page is standalone (same design system) with the first-start admin hint. The old `/api/auth/login` env-var placeholder is replaced by the same URL validating against the users DB (API clients can set the session programmatically) |
 | DB schema auto-creation + migrations | `factory.create_app` | `db.create_all()` + one-off migrations: `firewalls.project_id` nullable, `firewalls.model`/`auth_mode`/`api_token`, `config_objects.project_id` nullable (table rebuild), `config_objects.export_included`, `projects`/`firewalls` `is_deleted`+`deleted_at`, `trash` rebuilt multi-type, **`import_records` table** (new) + `config_objects.import_id` (nullable column) |
@@ -523,6 +553,10 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned.
   rolls everything back (the staged changes stay in the browser).
 - **Tailwind via CDN** — dev-only warning shown in the console; not a
   production build.
+- **Alpine is loaded from a floating CDN URL range** — it is now pinned to
+  3.17.5, but a future unpinned bump could silently change `x-init`
+  semantics again (3.17.5 already broke the confirm/toast bindings); re-verify
+  after any Alpine upgrade (see §2 design notes).
 - **Push is mocked** (`_mock_push_config`); real vendor APIs are not called
   unless `SWISSKNIFE_ENABLE_PUSH=1` (and even then it hits a placeholder URL).
 - **Vendor parsers cover 7 of 9 object types.** Both `FortinetParser` and
