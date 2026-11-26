@@ -5,3 +5,4 @@ WTForms==3.0.1
 python-dotenv==1.0.0
 requests==2.34.2
 gunicorn
+Werkzeug==2.3.7
