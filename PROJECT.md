@@ -5,8 +5,8 @@
 > `CHANGELOG.md` (see [Maintenance rules](#8-maintenance-rules)).
 >
 > **Priority for LLM-assisted work — query the Vector DB BEFORE reading any
-> file of this repository.** Use the companion **Vector_DB** store to retrieve
-> context (`C:\Users\hedhl\source\repos\Vector_DB`; usage is documented in its
+> file of this repository.** Use the companion **MyRAG** store to retrieve
+> context (`C:\Users\hedhl\source\repos\MyRAG`; usage is documented in its
 > `README.md`, workflow in [§7](#7-vector-db-integration-token-efficient-development))
 > to reduce token consumption. **Direct file reading is NOT allowed until the
 > Vector DB query has returned no useful information** (0 relevant chunks, or
@@ -96,7 +96,7 @@ Core capabilities:
 | Frontend JS | Alpine.js (CDN, **pinned to v3.17.5** — the floating `@3.x.x` URL silently broke the confirm/toast `x-init` bindings when it resolved to 3.17.5; see design notes) |
 | Styling | Tailwind CSS (CDN build — dev only) |
 | Misc | python-dotenv, requests |
-| Companion RAG project | **Vector_DB** (sibling repo `C:\Users\hedhl\source\repos\Vector_DB`) — ChromaDB + Ollama `nomic-embed-text`, token-efficient context retrieval; see [§7](#7-vector-db-integration-token-efficient-development) |
+| Companion RAG project | **MyRAG** (sibling repo `C:\Users\hedhl\source\repos\MyRAG`) — ChromaDB + Ollama `nomic-embed-text`, token-efficient context retrieval; see [§7](#7-vector-db-integration-token-efficient-development) |
 
 Python: 3.13 (`.venv` in the repository root).
 
@@ -445,7 +445,7 @@ Environment variables (all optional):
 | `SWISSKNIFE_SESSION_SECURE` | `1` marks the session cookie `Secure` (production / HTTPS only — off for local HTTP dev) | `0` |
 
 The `RAG_*` variables (source root, Ollama URL, thresholds, chunk sizes) belong
-to the **Vector_DB** project, not to this app — see
+to the **MyRAG** project, not to this app — see
 [§7](#7-vector-db-integration-token-efficient-development).
 
 ---
@@ -493,7 +493,8 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned.
 | **Authentication (local user accounts, separate users DB)** | `app/auth.py`, `User` model in `app/models.py` (`__bind_key__="users"` → `instance/users.db` via `SQLALCHEMY_BINDS`), `templates/login.html`, `/login` + `/logout` + `/api/auth/login` (JSON) + `/api/auth/me` + `/api/users` (list / create / PATCH display_name·is_active·generate_password·password / DELETE), `ensure_admin_user()` in the factory, `userManagement()` in app.js, the dashboard's **Users** section | **Session login with user + password** for every page and API route (pages → `/login?next=…` redirect, the original page is restored after signing in; API → JSON 401; static files + 404s + the login routes stay open). Best practices applied: passwords hashed with `werkzeug.security` (scrypt + random per-password salt, never stored/computed in plain text), generic "Invalid username or password" answer, **timing equalization** (a dummy hash check when the user does not exist), 0.5 s delay + log line on failed logins, HttpOnly + SameSite=Lax session cookie, 8 h session lifetime, session cleared before the login is stored (no fixation), `next` validated to a relative same-origin path, logout POST-only (no forced-logout via link), username validated (2-64 chars `[A-Za-z0-9._-]`, unique), password 8-128 chars, the user list never returns the hash. **First start bootstraps the `admin` account** (name `SWISSKNIFE_ADMIN_USER`, password `SWISSKNIFE_ADMIN_PASS` or a random one **printed once** to the console). **User management on the dashboard** (Users section, `userManagement()`): account table (username + "you" badge, display name, active/disabled badge, last login, created) + **Add user** modal (password optional → server-generated, shown **once** in a warning notice with a copy button) + per-row **Reset password** (generated, shown once) / **Enable / Disable** / **Delete** behind confirms; guards: no deleting or disabling **your own** account, and the **last active account** can neither be disabled nor deleted (defense in depth). Navbar shows the signed-in username + **Sign out** on every page; the login page is standalone (same design system) with the first-start admin hint. The old `/api/auth/login` env-var placeholder is replaced by the same URL validating against the users DB (API clients can set the session programmatically) |
 | DB schema auto-creation + migrations | `factory.create_app` | `db.create_all()` + one-off migrations: `firewalls.project_id` nullable, `firewalls.model`/`auth_mode`/`api_token`, `config_objects.project_id` nullable (table rebuild), `config_objects.export_included`, `projects`/`firewalls` `is_deleted`+`deleted_at`, `trash` rebuilt multi-type, **`import_records` table** (new) + `config_objects.import_id` (nullable column) |
 | Demo data seed | `instance/swissknife.db` | "Demo Project" + 2 demo firewalls |
-| Vector DB (standalone project) | `C:\Users\hedhl\source\repos\Vector_DB` | indexes this repo **including the `files/` sample configs** (`.conf`/`.xml`/`.txt`) and the frontend (`templates/*.html` + `static/js/app.js`); **chunker v2**: token-accurate (tiktoken) 400/500-token chunks, 0% overlap, Python split at function granularity (Tree-sitter AST, classes split per method), context headers embedded with each chunk, non-source files excluded; **retrieval**: top-10 (hard cap 12) + cosine threshold + dedup + **7,000-token strict budget** enforced before the prompt; file-scoped queries via `--where file=...` — the only search path for the multi-MB samples, see [§7](#7-vector-db-integration-token-efficient-development) |
+| Vector DB (standalone project) | `C:\Users\hedhl\source\repos\MyRAG` | indexes this repo **including the `files/` sample configs** (`.conf`/`.xml`/`.txt`) and the frontend (`templates/*.html` + `static/js/app.js`); **chunker v2**: token-accurate (tiktoken) 400/500-token chunks, 0% overlap, Python split at function granularity (Tree-sitter AST, classes split per method), context headers embedded with each chunk, non-source files excluded; **retrieval**: top-10 (hard cap 12) + cosine threshold + dedup + **7,000-token strict budget** enforced before the prompt; file-scoped queries via `--where file=...` — the only search path for the multi-MB samples, see [§7](#7-vector-db-integration-token-efficient-development) |
+| Vector DB: per-chunk source line ranges (chunker 2.1) | MyRAG `app/rag/chunker.py` (`line_start` / `line_end` chunk metadata), `app/rag/retrieval.py`, `rag_query.py` CLI + `POST /api/rag/query` | every chunk stores the **1-based line range of the original file it covers**; every query returns it on all paths — CLI / LLM prompt: `file [section] (lines X-Y)` per chunk, API: `line_start` / `line_end` per chunk. The returned range is the **read/write cursor** for file operations: read or edit exactly those lines of the source file instead of re-reading the whole file (mandatory — [§8](#8-maintenance-rules), rule 2); the store was rebuilt with `python index_db.py --rebuild` so all 2,640 chunks carry ranges (chunker `2.1-token-ast-lineno`) |
 
 ### Planned (suggested backlog)
 
@@ -603,14 +604,19 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned.
 ## 7. Vector DB integration (token-efficient development)
 
 **Priority:** when **modifying this project or adding new features**,
-LLM-assisted work **MUST query the standalone Vector_DB project before every
+LLM-assisted work **MUST query the standalone MyRAG project before every
 direct reading of this repository's files** — the query is a mandatory first
 step of any change (including a precise edit), to reduce token consumption.
+**The line ranges the query returns** (`line_start`/`line_end` per chunk,
+printed as `file [section] (lines X-Y)`) **are the read/write cursor for this
+repository**: every subsequent read or write of a file the query answered for
+operates on exactly those lines (mandatory —
+[§8](#8-maintenance-rules), rule 2).
 **Direct file reading is NOT allowed until the retrieval has returned no
 useful information** (0 relevant chunks, or chunks that do not answer the
 question):
 
-- **Location & usage:** `C:\Users\hedhl\source\repos\Vector_DB` — independent
+- **Location & usage:** `C:\Users\hedhl\source\repos\MyRAG` — independent
   repo; **its `README.md` holds the full documentation** and is the reference
   for how to query/index the store.
 - **What it indexes:** this repository (default extensions
@@ -630,6 +636,14 @@ question):
   guarantees the cap even on minified single-line files (the previous
   word-based chunker produced 47,568-token chunks from the `files/` samples —
   the root cause of the ~262k-token prompt overflow).
+- **Per-chunk source line ranges (chunker 2.1):** every chunk stores the
+  1-based line range of the original file it covers (`line_start` /
+  `line_end`) in its metadata, and every query returns it on all paths — the
+  CLI and the LLM prompt print `file [section] (lines X-Y)` per chunk, and
+  `POST /api/rag/query` carries `line_start` / `line_end` per chunk. The
+  returned range is the **read/write cursor**: read or edit exactly those
+  lines of the source file instead of re-reading the whole file (mandatory —
+  [§8](#8-maintenance-rules), rule 2).
 - **Token saving:** retrieval returns only the top-k chunks (default 10,
   **hard-capped at 12**, cosine >= 0.45, deduplicated), and a **strict token
   budget (default 7,000 tokens)** is enforced right before the prompt is
@@ -638,7 +652,7 @@ question):
   budget**. An unrelated query returns 0 chunks (the prompt says so
   explicitly) so no prompt tokens are wasted.
 - **After any chunker change:** wipe and re-index —
-  `python index_db.py --rebuild` from the Vector_DB repo (the indexer prints a
+  `python index_db.py --rebuild` from the MyRAG repo (the indexer prints a
   CHUNKER UPDATE PENDING reminder if it detects stale chunks).
 
 ### Workflow for feature development / modification
@@ -654,10 +668,10 @@ question):
 
 2. **Mandatory Vector DB query BEFORE reading any file** — ask the store
    about the area you will touch (usage reference:
-   `C:\Users\hedhl\source\repos\Vector_DB\README.md`):
+   `C:\Users\hedhl\source\repos\MyRAG\README.md`):
 
    ```bat
-   :: from C:\Users\hedhl\source\repos\Vector_DB, with its venv activated
+   :: from C:\Users\hedhl\source\repos\MyRAG, with its venv activated
    python rag_query.py "How does the export flow work?"
    python rag_query.py "What validation rules does ProjectForm implement?"
    python rag_query.py "How is modification history written?" --where "file=app/models.py"
@@ -669,20 +683,27 @@ question):
    `POST http://127.0.0.1:5100/api/rag/query` (add `"token_budget": 7000` to
    override) — to the LLM. Only when the query returns no useful information
    (0 relevant chunks, or chunks that do not answer the question) may you fall
-   back to reading the file directly.
+   back to reading the file directly. Each result also carries the chunk's
+   **file, section and 1-based source line range** (`(lines X-Y)` in the CLI
+   and prompt, `line_start` / `line_end` in the API response) — keep it: it
+   is the read/write cursor for step 3.
 
 3. **Implement the change** in this repo (models, views, API, templates,
-   `PROJECT.md`).
+   `PROJECT.md`) **using the line ranges the query returned**: for every file
+   the query answered for, read or write exactly the returned `line_start`–
+   `line_end` range of the relevant chunk(s) (ranged read, line-anchored
+   edit) — do not re-read the whole file or re-locate code the query already
+   located ([§8](#8-maintenance-rules), rule 2).
 
 4. **Re-index afterwards** so the store reflects the new code/docs:
 
    ```bat
-   :: from the Vector_DB repo root
+   :: from the MyRAG repo root
    python index_db.py         :: skips unchanged files; re-embeds only changed ones
    python index_db.py --prune :: optional: drop chunks of files that were deleted
    ```
 
-   (or run the Vector_DB HTTP service and `POST /api/rag/reindex`). **After
+   (or run the MyRAG HTTP service and `POST /api/rag/reindex`). **After
    changing the chunking algorithm itself**, unchanged files would keep their
    old chunks — wipe and re-index instead: `python index_db.py --rebuild`
    (the indexer prints a CHUNKER UPDATE PENDING reminder when it detects
@@ -697,7 +718,7 @@ question):
 5. **Verify:** `GET http://127.0.0.1:5100/api/rag/status`, or ask the store
    about the new feature with `python rag_query.py`.
 
-### Vector_DB configuration (env vars, all optional)
+### MyRAG configuration (env vars, all optional)
 
 | Variable | Purpose | Default |
 |---|---|---|
@@ -712,10 +733,10 @@ question):
 
 Notes:
 
-- The Vector_DB store is **local-only and gitignored**; it may contain
+- The MyRAG store is **local-only and gitignored**; it may contain
   sensitive data (e.g. `ENC` passwords from firewall configs) — never share
   `.vectordb/`.
-- Ollama must be running for indexing/querying; otherwise the Vector_DB CLI
+- Ollama must be running for indexing/querying; otherwise the MyRAG CLI
   exits with a clear error and its HTTP service returns 503.
 - **Backgrounding the re-index on Windows:** do NOT use
   `start "" python index_db.py > _reindex_log.txt 2>&1` — in cmd the
@@ -725,9 +746,9 @@ Notes:
   explicit stream redirection (`-u` = unbuffered, so progress is logged live):
 
   ```powershell
-  Start-Process -FilePath "C:\Users\hedhl\source\repos\Vector_DB\.venv\Scripts\python.exe" \
+  Start-Process -FilePath "C:\Users\hedhl\source\repos\MyRAG\.venv\Scripts\python.exe" \
     -ArgumentList '-u','index_db.py' \
-    -WorkingDirectory "C:\Users\hedhl\source\repos\Vector_DB" \
+    -WorkingDirectory "C:\Users\hedhl\source\repos\MyRAG" \
     -RedirectStandardOutput "_reindex_log.txt" -RedirectStandardError "_reindex_err.txt" \
     -PassThru
   ```
@@ -742,7 +763,7 @@ Notes:
   **Tree-sitter AST chunking** (JS/TS top-level functions/declarations,
   Python top-level `def`/`class` blocks, HTML body-level elements,
   CSS rules); if this repo adds other file types worth indexing, extend
-  the scope in Vector_DB
+  the scope in MyRAG
   (`RAG_SOURCE_ROOT` + `--ext`, or `DEFAULT_INDEX_EXTS` in
   `app/rag/config.py` there).
 
@@ -750,9 +771,9 @@ Notes:
 
 ## 8. Maintenance rules
 
-1. **Querying the Vector_DB store is MANDATORY before every direct file read
+1. **Querying the MyRAG store is MANDATORY before every direct file read
    of this repository** (token-efficient context retrieval) — follow the
-   usage documented in `C:\Users\hedhl\source\repos\Vector_DB\README.md`
+   usage documented in `C:\Users\hedhl\source\repos\MyRAG\README.md`
    (workflow in
    [§7](#7-vector-db-integration-token-efficient-development)). **No direct
    file reading is allowed until the query has returned no useful
@@ -763,26 +784,35 @@ Notes:
    ONLY allowed search path** (multi-MB files, already indexed): query with a
    `--where file=files/...` filter, see
    [§7](#7-vector-db-integration-token-efficient-development).
-2. **Before committing any change**, add an entry to **`CHANGELOG.md`**
+2. **Use the Vector DB query's line information for every file read and write
+   in this repository.** Every query result carries the **1-based source line
+   range of the original file the chunk covers** (CLI / LLM prompt:
+   `file [section] (lines X-Y)`; `POST /api/rag/query`: `line_start` /
+   `line_end` per chunk). When the query returned the area you need, **read or
+   write exactly that line range** of the source file (ranged read,
+   line-anchored edit) — never re-read the whole file or re-locate code the
+   query already located. A whole-file read remains allowed only in the
+   fallback granted by rule 1 (the query returned no useful information).
+3. **Before committing any change**, add an entry to **`CHANGELOG.md`**
    under today's date:
    - what changed (bug fix / feature / refactor),
    - which files were touched,
    - how it was verified.
-3. **Update the Feature tracking table** in
+4. **Update the Feature tracking table** in
    [§5](#5-feature-tracking):
    - move items 📋 → 🚧 → ✅ as work progresses,
    - add new 📋 rows when a new capability is scoped.
-4. If an architecture decision changes (DB, stack, routes), update
+5. If an architecture decision changes (DB, stack, routes), update
    [§1](#1-description), [§2](#2-architecture--layout) and
    [§3](#3-how-to-run) in the same pass.
-5. Keep this file at the repository root: `PROJECT.md`.
-6. **After any change to code or documentation**, update the **Vector_DB**
+6. Keep this file at the repository root: `PROJECT.md`.
+7. **After any change to code or documentation**, update the **MyRAG**
    store so retrieval reflects the current state of this repository:
-   from `C:\Users\hedhl\source\repos\Vector_DB` (with its venv activated)
+   from `C:\Users\hedhl\source\repos\MyRAG` (with its venv activated)
    run `python index_db.py` — add `--prune` when files were deleted —
    see the workflow in
    [§7](#7-vector-db-integration-token-efficient-development) (step 4).
-7. **Testing:** functional verification of the web UI and its flows is done
+8. **Testing:** functional verification of the web UI and its flows is done
    with **obscura (the headless browser)**; there is no permanent automated
    test suite in the repo. **Every created test file and generated log
    (test scripts, run logs, launcher files, dumps, screenshots, API probes)
@@ -790,7 +820,7 @@ Notes:
    or inside `app/`, `templates/`, `static/` or `files/` (stray files at the
    root would be picked up by the next Vector DB re-index) — see
    [§9](#9-qa-folder-files-created-during-the-testing-phase).
-8. `QA/` is disposable: after a test round its contents may be deleted; nothing
+9. `QA/` is disposable: after a test round its contents may be deleted; nothing
    in `QA/` is a permanent part of the application and `QA/` scripts are not
    imported by the app (they rely only on the app's own venv).
 

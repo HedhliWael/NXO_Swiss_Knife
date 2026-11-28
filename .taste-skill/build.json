@@ -1,0 +1,11 @@
+{
+ "page": null,
+ "url": "http://127.0.0.1:5000/login",
+ "root": null,
+ "kind": "software",
+ "category": "firewall configuration management for Palo Alto and Fortinet",
+ "primary": "Sign in",
+ "rounds": 3,
+ "start": "2026-11-27T15:30:23.898Z",
+ "by": "gate.mjs --start"
+}

@@ -10,6 +10,30 @@ Chronological log of all modifications to the project. **Newest first.**
 
 ---
 
+## 2026-11-28
+
+**UI tweak — export wizard step 3 (Summary): the Palo Alto file-format options (XML (.xml) / Set / display format (.txt)) now sit under "Generate configuration file (download)" in the "Delivery Method" fieldset instead of below both method options:**
+
+- `templates/export.html` (step 3 Summary, Delivery Method fieldset): the "Palo Alto file format" radio block (`x-model="format"`: `xml` / `set`) moved from below the whole method list to **between** the "Generate configuration file (download)" and "Push to the firewall via API" labels — nested/indented (`margin-left: 1.5rem`) under the file option; the parent flex column's `gap: 0.5rem` now provides the vertical spacing, so the block's `margin-top: 0.75rem` was dropped. Visibility condition unchanged (`x-show="method === 'file' && fw() && fw().vendor === 'paloalto'"`): the block appears only while "Generate configuration file (download)" is selected and the destination firewall is Palo Alto — choosing "Push to the firewall via API" collapses it (and it stays hidden for Fortinet). No JS / API changes.
+- Files touched: `templates/export.html`, `CHANGELOG.md`.
+- Verified (throwaway server on port 5050 with DB copies in `QA/` + known bootstrap `admin` password — the user's `instance/` databases were never touched; all `QA/` artifacts deleted afterwards): `GET /projects/3/export` (DEMO-PROJET, Palo Alto firewall Demo-PA-3410 attached) renders 200 and the DOM order inside the fieldset is exactly: Generate configuration file (download) → Palo Alto file format → XML (.xml) → Set / display format (.txt) → Push to the firewall via API; the `x-show` condition is intact, the indent is present and the old `margin-top` is gone.
+
+---
+
+## 2026-11-27
+
+**Vector DB: queries now return the per-chunk 1-based source line range (store rebuilt on chunker `2.1-token-ast-lineno`), and using that line information for every file read/write of this repo is now a maintenance rule:**
+
+- Vector_DB store wiped and re-indexed with `python index_db.py --rebuild` — all 2,640 chunks (38 files) now on chunker `2.1-token-ast-lineno` (the line-tracking chunker; the previous store was entirely `2.0-token-ast`, which carried no line info). Every query path now returns the line range of the original file a chunk covers: CLI / LLM prompt `file [section] (lines X-Y)` per chunk, `POST /api/rag/query` `line_start` / `line_end` per chunk.
+- `PROJECT.md`:
+  - §5 Done: new row "Vector DB: per-chunk source line ranges (chunker 2.1)".
+  - §7: the "Priority" note and a new bullet document the per-chunk line ranges; workflow steps 2–3 now state that the returned ranges are the read/write cursor for the change (ranged read / line-anchored edit, no whole-file re-reads).
+  - §8: **new rule 2 — use the Vector DB query's line information for every file read and write of this repo** (operate on exactly the returned `line_start`–`line_end`; a whole-file read remains allowed only in the rule-1 fallback); existing rules 2–8 renumbered to 3–9.
+- Files touched: `PROJECT.md`, `CHANGELOG.md`; Vector_DB: store rebuild only (no code change).
+- Verified: live query `python rag_query.py "How does the import wizard work?"` now returns `app/views.py [def import_page():] (lines 607-648)` — checked against the source: line 607 = `@views_bp.route("/import")`, line 648 = the function's closing `)`; the `CHANGELOG.md` chunk range 121–131 is exactly the `## 2026-11-26` section; `chunker_report` shows 100% of the store on the current chunker.
+
+---
+
 ## 2026-11-26
 
 **Fix: styled confirm dialog / toast stack broken by Alpine 3.17.5 ("this.ask is not a function" — delete / modify / restore buttons dead), plus "Total Objects" dashboard stat never defined, plus page content now re-syncs when returning from the trash via the browser back/forward button:**

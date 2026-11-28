@@ -216,21 +216,21 @@
                                 <input type="radio" x-model="method" value="file" style="cursor: pointer;">
                                 Generate configuration file (download)
                             </label>
+                            <!-- Palo Alto file format — nested under "Generate configuration file (download)" -->
+                            <div style="margin-left: 1.5rem; display: flex; flex-direction: column; gap: 0.5rem;" x-show="method === 'file' && fw() && fw().vendor === 'paloalto'">
+                                <p style="font-size: 0.75rem; color: var(--color-ink-muted); margin: 0;">Palo Alto file format</p>
+                                <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--color-ink); cursor: pointer;">
+                                    <input type="radio" x-model="format" value="xml" style="cursor: pointer;">
+                                    XML (.xml)
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--color-ink); cursor: pointer;">
+                                    <input type="radio" x-model="format" value="set" style="cursor: pointer;">
+                                    Set / display format (.txt)
+                                </label>
+                            </div>
                             <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--color-ink); cursor: pointer;">
                                 <input type="radio" x-model="method" value="push" style="cursor: pointer;">
                                 Push to the firewall via API
-                            </label>
-                        </div>
-
-                        <div style="margin-left: 1.5rem; margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;" x-show="method === 'file' && fw() && fw().vendor === 'paloalto'">
-                            <p style="font-size: 0.75rem; color: var(--color-ink-muted); margin: 0;">Palo Alto file format</p>
-                            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--color-ink); cursor: pointer;">
-                                <input type="radio" x-model="format" value="xml" style="cursor: pointer;">
-                                XML (.xml)
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--color-ink); cursor: pointer;">
-                                <input type="radio" x-model="format" value="set" style="cursor: pointer;">
-                                Set / display format (.txt)
                             </label>
                         </div>
                     </fieldset>
